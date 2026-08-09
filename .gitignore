@@ -1,9 +1,11 @@
-node_modules/
 .next/
-.vercel/
+node_modules/
+.pnpm-store/
 .env
 .env.*
 !.env.example
-*.zip
 *.log
+*.zip
 .DS_Store
+.vercel/
+tsconfig.tsbuildinfo

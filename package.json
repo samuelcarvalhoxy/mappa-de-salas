@@ -1,0 +1,33 @@
+{
+  "name": "mappa-de-salas",
+  "version": "0.5.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@neondatabase/serverless": "^1.0.2",
+    "bcryptjs": "^3.0.2",
+    "exceljs": "^4.4.0",
+    "jose": "^6.1.0",
+    "lucide-react": "^0.468.0",
+    "next": "16.1.6",
+    "react": "19.2.3",
+    "react-dom": "19.2.3",
+    "web-push": "^3.6.7",
+    "zod": "^4.1.13"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "@types/react": "^19.0.3",
+    "@types/react-dom": "^19.0.2",
+    "@types/web-push": "^3.6.4",
+    "eslint": "^9.17.0",
+    "eslint-config-next": "16.1.6",
+    "typescript": "^5.7.2"
+  }
+}

@@ -311,3 +311,7 @@ Antes de editar:
 7. Valide tecnicamente antes de publicar e valide produção depois.
 
 O objetivo é permitir evolução contínua do Mappa de Salas sem recriar a aplicação, perder dados, expor credenciais ou reduzir as proteções já implementadas.
+
+## 18. Deploy contínuo
+
+O repositório oficial `samuelcarvalhoxy/mappa-de-salas` está conectado ao projeto de produção `mappa-de-salas` existente na Vercel. Commits na branch `main` devem acionar o deploy automático usando as variáveis de ambiente e o banco já configurados no projeto. Não recrie o projeto Vercel nem substitua o banco durante manutenções normais.

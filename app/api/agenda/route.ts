@@ -42,7 +42,7 @@ export async function GET(request: NextRequest) {
     );
 
   const rows = await sql().query(
-    `SELECT rs.id,rs.room_id,r.name room_name,rs.user_id,u.name user_name,rs.reason,rs.starts_at,rs.ends_at,
+    `SELECT rs.id,rs.room_id,r.name room_name,rs.user_id,u.name user_name,u.username user_username,rs.reason,rs.starts_at,rs.ends_at,
       rs.shareable,rs.expected_people,rs.status,rs.created_by,c.name creator_name,rs.series_id
     FROM reservations rs
     JOIN rooms r ON r.id=rs.room_id
@@ -61,6 +61,7 @@ export async function GET(request: NextRequest) {
       roomName: row.room_name,
       userId: row.user_id,
       userName: row.user_name,
+      userUsername: row.user_username,
       reason: row.reason,
       startsAt: row.starts_at,
       endsAt: row.ends_at,

@@ -13,6 +13,7 @@ import {
   Armchair,
   BarChart3,
   Bell,
+  Bug,
   Building2,
   CalendarDays,
   CalendarRange,
@@ -21,18 +22,23 @@ import {
   ChevronRight,
   ClipboardList,
   Clock3,
+  Code2,
   DoorOpen,
   Download,
   Eye,
+  ExternalLink,
   FileSpreadsheet,
   History,
   KeyRound,
   LayoutGrid,
+  Lightbulb,
   LogOut,
+  Mail,
   MapPin,
   Menu,
   Monitor,
   Moon,
+  Phone,
   Plus,
   Search,
   Settings2,
@@ -72,6 +78,9 @@ const EMPTY: AppState = {
   requests: [],
   roles: [],
   users: [],
+  developmentTeam: [],
+  feedbackReports: [],
+  notifications: [],
   shifts: [],
   audit: [],
   pushPublicKey: "",
@@ -463,6 +472,9 @@ export function AppShell() {
   const pendingRequests = state.requests.filter(
     (request) => request.status === "pending",
   ).length;
+  const unreadNotifications = state.notifications.filter(
+    (notification) => !notification.readAt,
+  ).length;
   const nav = [
     { id: "map", label: "Mapa de salas", icon: LayoutGrid, show: true },
     { id: "calendar", label: "Agenda", icon: CalendarDays, show: true },
@@ -495,6 +507,12 @@ export function AppShell() {
       show: can("stats.view"),
     },
     { id: "audit", label: "Histórico", icon: History, show: can("audit.view") },
+    {
+      id: "development",
+      label: "Equipe de desenvolvimento",
+      icon: Code2,
+      show: true,
+    },
   ].filter((item) => item.show);
 
   const titles: Record<string, [string, string]> = {
@@ -506,6 +524,10 @@ export function AppShell() {
     roles: ["Perfis e acessos", "Permissões sob medida para cada equipe"],
     stats: ["Estatísticas", "Padrões de utilização por pessoa ou sala"],
     audit: ["Histórico", "Rastreabilidade das alterações"],
+    development: [
+      "Equipe de desenvolvimento",
+      "Pessoas que constroem e evoluem o Mappa de Salas",
+    ],
   };
 
   return (
@@ -545,6 +567,10 @@ export function AppShell() {
           <button onClick={() => setModal({ type: "password" })}>
             <KeyRound size={18} />
             <span>Alterar minha senha</span>
+          </button>
+          <button onClick={() => setModal({ type: "feedback" })}>
+            <Bug size={18} />
+            <span>Reportar bug ou sugerir melhoria</span>
           </button>
           <div className="user-mini">
             <div className="avatar">
@@ -609,25 +635,16 @@ export function AppShell() {
                   : "Ativar alertas"}
               </button>
             )}
-            {state.pushPublicKey &&
-              notifications.permission === "granted" &&
-              notifications.status !== "error" && (
-              <button
-                className="icon-btn"
-                title={
-                  notifications.status === "active"
-                    ? "Notificações ativas. Clique para testar."
-                    : "Sincronizando notificações"
-                }
-                disabled={notifications.status === "syncing"}
-                onClick={async () => {
-                  const ok = await notifications.test();
-                  if (ok) setToast("Notificação de teste enviada.");
-                }}
-              >
-                <Bell size={18} />
-              </button>
-            )}
+            <button
+              className="icon-btn notification-center-button"
+              title="Abrir notificações"
+              onClick={() => setModal({ type: "notifications" })}
+            >
+              <Bell size={18} />
+              {unreadNotifications > 0 && (
+                <span>{Math.min(unreadNotifications, 99)}</span>
+              )}
+            </button>
             {install.available && (
               <button
                 className="btn btn-soft desktop-install"
@@ -786,6 +803,33 @@ export function AppShell() {
           )}
           {activeTab === "stats" && <StatsView state={state} />}
           {activeTab === "audit" && <AuditView state={state} />}
+          {activeTab === "development" && (
+            <DevelopmentTeamView
+              state={state}
+              canEdit={user.isGod}
+              onNew={() => setModal({ type: "development-member" })}
+              onEdit={(member) =>
+                setModal({ type: "development-member", data: member })
+              }
+              onDelete={(member) => {
+                if (
+                  window.confirm(
+                    `Remover ${member.name} da equipe de desenvolvimento?`,
+                  )
+                )
+                  act(
+                    { action: "development_team.delete", id: member.id },
+                    "Integrante removido.",
+                  );
+              }}
+              onFeedbackStatus={(report, status) =>
+                act(
+                  { action: "feedback.status", id: report.id, status },
+                  "Status do relato atualizado.",
+                )
+              }
+            />
+          )}
         </div>
       </main>
       {modal?.type === "booking" && (
@@ -948,6 +992,53 @@ export function AppShell() {
           }
         />
       )}
+      {modal?.type === "development-member" && (
+        <DevelopmentMemberModal
+          member={
+            modal.data as AppState["developmentTeam"][number] | undefined
+          }
+          onClose={() => setModal(null)}
+          onSave={(data) =>
+            act(
+              { action: "development_team.save", ...(data as object) },
+              "Perfil da equipe atualizado.",
+            )
+          }
+        />
+      )}
+      {modal?.type === "feedback" && (
+        <FeedbackModal
+          currentUserName={user.name}
+          onClose={() => setModal(null)}
+          onSave={async (data) => {
+            await api("/api/feedback", data as Record<string, unknown>);
+            setModal(null);
+            setError("");
+            setToast("Relato enviado para a equipe de desenvolvimento.");
+            await refresh(true);
+          }}
+        />
+      )}
+      {modal?.type === "notifications" && (
+        <NotificationsModal
+          state={state}
+          pushAvailable={Boolean(state.pushPublicKey)}
+          pushActive={notifications.permission === "granted"}
+          onClose={() => setModal(null)}
+          onMarkAll={async () => {
+            await api("/api/action", { action: "notification.read_all" });
+            await refresh(true);
+          }}
+          onEnablePush={async () => {
+            const ok = await notifications.enable();
+            if (ok) setToast("Push ativado e testado neste dispositivo.");
+          }}
+          onTestPush={async () => {
+            const ok = await notifications.test();
+            if (ok) setToast("Notificação de teste enviada.");
+          }}
+        />
+      )}
       {toast && !error && (
         <div className="toast">
           <Check size={18} />
@@ -1006,6 +1097,8 @@ function LoginScreen({ onDone }: { onDone: () => void }) {
   const [newPassword, setNewPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [showFeedback, setShowFeedback] = useState(false);
+  const [feedbackSent, setFeedbackSent] = useState(false);
   const submit = async (e: FormEvent) => {
     e.preventDefault();
     setBusy(true);
@@ -1253,10 +1346,24 @@ function LoginScreen({ onDone }: { onDone: () => void }) {
             </>
           )}
         </div>
-        <small className="auth-footer">
-          Mappa de Salas • Ambiente corporativo
-        </small>
+        <div className="auth-footer">
+          <span>Mappa de Salas • Ambiente corporativo</span>
+          <button type="button" onClick={() => setShowFeedback(true)}>
+            <Bug size={14} /> Reportar bug ou sugerir melhoria
+          </button>
+          {feedbackSent && <strong>Relato enviado. Obrigado!</strong>}
+        </div>
       </section>
+      {showFeedback && (
+        <FeedbackModal
+          onClose={() => setShowFeedback(false)}
+          onSave={async (data) => {
+            await api("/api/feedback", data as Record<string, unknown>);
+            setShowFeedback(false);
+            setFeedbackSent(true);
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -1289,6 +1396,29 @@ function SecuritySelect({
   );
 }
 
+const MAP_SHIFTS = [
+  { id: "morning", name: "Manhã", startTime: "07:00", endTime: "14:20" },
+  {
+    id: "afternoon",
+    name: "Tarde",
+    startTime: "14:20",
+    endTime: "21:00",
+  },
+  { id: "extra", name: "Extra", startTime: "21:00", endTime: "07:00" },
+] as const;
+
+function mapShiftForNow(value: string) {
+  const localTime = new Intl.DateTimeFormat("pt-BR", {
+    timeZone: "America/Bahia",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).format(new Date(value));
+  if (localTime >= "07:00" && localTime < "14:20") return "morning";
+  if (localTime >= "14:20" && localTime < "21:00") return "afternoon";
+  return "extra";
+}
+
 function RoomMap({
   state,
   selectedDate,
@@ -1310,25 +1440,34 @@ function RoomMap({
 }) {
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState("all");
+  const [selectedShiftId, setSelectedShiftId] = useState(() =>
+    mapShiftForNow(state.now),
+  );
   const [dayReservations, setDayReservations] = useState<Reservation[]>([]);
-  const [loadedDate, setLoadedDate] = useState("");
+  const [loadedKey, setLoadedKey] = useState("");
   const [dayLoading, setDayLoading] = useState(true);
   const [dayError, setDayError] = useState("");
   const [reloadDay, setReloadDay] = useState(0);
   const now = new Date(state.now);
   const today = dateKey(state.now);
   const isToday = selectedDate === today;
-  const dayStartTime =
-    state.shifts.reduce(
-      (earliest, shift) =>
-        !earliest || shift.startTime < earliest ? shift.startTime : earliest,
-      "",
-    ) || "08:00";
-  const reference = isToday
-    ? now
-    : new Date(`${selectedDate}T${dayStartTime}:00-03:00`);
-  const referenceLabel = isToday ? "agora" : `às ${dayStartTime}`;
-  const dayReady = loadedDate === selectedDate;
+  const selectedShift =
+    MAP_SHIFTS.find((shift) => shift.id === selectedShiftId) || MAP_SHIFTS[0];
+  const shiftCrossesMidnight = selectedShift.endTime <= selectedShift.startTime;
+  const shiftEndDate = shiftCrossesMidnight
+    ? addDays(selectedDate, 1)
+    : selectedDate;
+  const shiftStart = new Date(
+    `${selectedDate}T${selectedShift.startTime}:00-03:00`,
+  );
+  const shiftEnd = new Date(
+    `${shiftEndDate}T${selectedShift.endTime}:00-03:00`,
+  );
+  const reference =
+    isToday && now >= shiftStart && now < shiftEnd ? now : shiftStart;
+  const referenceIsNow = reference.getTime() === now.getTime();
+  const loadKey = `${selectedDate}:${selectedShift.id}`;
+  const dayReady = loadedKey === loadKey;
 
   useEffect(() => {
     let cancelled = false;
@@ -1338,11 +1477,11 @@ function RoomMap({
       setDayError("");
       try {
         const data = await api(
-          `/api/agenda?from=${selectedDate}&to=${selectedDate}`,
+          `/api/agenda?from=${selectedDate}&to=${shiftEndDate}`,
         );
         if (cancelled) return;
         setDayReservations(data.reservations || []);
-        setLoadedDate(selectedDate);
+        setLoadedKey(loadKey);
       } catch (error) {
         if (cancelled) return;
         setDayError(
@@ -1357,46 +1496,64 @@ function RoomMap({
     return () => {
       cancelled = true;
     };
-  }, [selectedDate, state.now, reloadDay]);
+  }, [loadKey, selectedDate, shiftEndDate, state.now, reloadDay]);
 
   const reservations = dayReady ? dayReservations : [];
-  const currentFor = (roomId: string) =>
-    reservations.find(
-      (r) =>
-        r.roomId === roomId &&
-        r.status === "reserved" &&
-        new Date(r.startsAt) <= reference &&
-        new Date(r.endsAt) > reference,
-    );
-  const nextFor = (roomId: string) =>
+  const shiftReservationsFor = (roomId: string) =>
     reservations
       .filter(
-        (r) =>
-          r.roomId === roomId &&
-          r.status === "reserved" &&
-          new Date(r.startsAt) > reference,
+        (reservation) =>
+          reservation.roomId === roomId &&
+          reservation.status === "reserved" &&
+          new Date(reservation.startsAt) < shiftEnd &&
+          new Date(reservation.endsAt) > shiftStart,
       )
       .sort(
-        (a, b) =>
-          new Date(a.startsAt).getTime() - new Date(b.startsAt).getTime(),
-      )[0];
+        (left, right) =>
+          new Date(left.startsAt).getTime() - new Date(right.startsAt).getTime(),
+      );
+  const currentFor = (roomId: string) =>
+    shiftReservationsFor(roomId).find(
+      (reservation) =>
+        new Date(reservation.startsAt) <= reference &&
+        new Date(reservation.endsAt) > reference,
+    );
+  const nextFor = (roomId: string) =>
+    shiftReservationsFor(roomId).find(
+      (reservation) => new Date(reservation.startsAt) > reference,
+    );
   const filtered = state.rooms.filter((room) => {
-    const current = currentFor(room.id);
+    const roomShiftReservations = shiftReservationsFor(room.id);
+    const hasReservation = roomShiftReservations.length > 0;
     const matchesFilter =
       filter === "all" ||
       (filter === "free"
-        ? !current
+        ? !hasReservation
         : filter === "reserved"
-          ? current
+          ? hasReservation
           : room.kind === filter);
+    const searchText = `${room.name} ${room.location}`.toLowerCase();
+    const reservationMatches = roomShiftReservations.some((reservation) =>
+      `${reservation.userName} ${reservation.userUsername || ""}`
+        .toLowerCase()
+        .includes(query.trim().toLowerCase()),
+    );
     return (
       matchesFilter &&
-      `${room.name} ${room.location}`
-        .toLowerCase()
-        .includes(query.toLowerCase())
+      (!query.trim() ||
+        searchText.includes(query.trim().toLowerCase()) ||
+        reservationMatches)
     );
   });
-  const free = state.rooms.filter((r) => !currentFor(r.id)).length;
+  const free = state.rooms.filter(
+    (room) => shiftReservationsFor(room.id).length === 0,
+  ).length;
+  const cycleShift = () => {
+    const currentIndex = MAP_SHIFTS.findIndex(
+      (shift) => shift.id === selectedShift.id,
+    );
+    setSelectedShiftId(MAP_SHIFTS[(currentIndex + 1) % MAP_SHIFTS.length].id);
+  };
   const changeDate = (nextDate: string) => {
     if (/^\d{4}-\d{2}-\d{2}$/.test(nextDate)) onSelectedDateChange(nextDate);
   };
@@ -1410,9 +1567,8 @@ function RoomMap({
           <div>
             <strong>{isToday ? "Hoje" : requestDateLabel(selectedDate)}</strong>
             <small>
-              {isToday
-                ? "Mapa atualizado conforme o horário atual"
-                : `Visualização do dia com referência às ${dayStartTime}`}
+              Status referente ao turno {selectedShift.name.toLowerCase()}, das{" "}
+              {selectedShift.startTime} às {selectedShift.endTime}
             </small>
           </div>
         </div>
@@ -1450,6 +1606,14 @@ function RoomMap({
               Hoje
             </button>
           )}
+          <button
+            className="btn btn-soft map-shift-button"
+            type="button"
+            title="Clique para alternar entre manhã, tarde e turno extra"
+            onClick={cycleShift}
+          >
+            <Clock3 size={16} /> Turno: {selectedShift.name}
+          </button>
         </div>
       </div>
       {!dayReady && (
@@ -1475,34 +1639,34 @@ function RoomMap({
       <div className="summary-grid">
         <Summary
           icon={DoorOpen}
-          label={isToday ? "Salas disponíveis agora" : `Disponíveis ${referenceLabel}`}
+          label="Livres durante todo o turno"
           value={`${free} de ${state.rooms.length}`}
           tone="green"
         />
         <Summary
           icon={Users}
-          label={isToday ? "Reservadas agora" : `Reservadas ${referenceLabel}`}
+          label="Com reserva no turno"
           value={String(state.rooms.length - free)}
           tone="amber"
         />
         <Summary
           icon={CalendarDays}
-          label={isToday ? "Reservas futuras" : "Reservas neste dia"}
+          label="Reservas no turno"
           value={String(
-            isToday
-              ? state.reservations.filter(
-                  (r) =>
-                    r.status === "reserved" && new Date(r.startsAt) > now,
-                ).length
-              : reservations.filter((r) => r.status === "reserved").length,
+            reservations.filter(
+              (reservation) =>
+                reservation.status === "reserved" &&
+                new Date(reservation.startsAt) < shiftEnd &&
+                new Date(reservation.endsAt) > shiftStart,
+            ).length,
           )}
           tone="blue"
           onClick={onOpenAgenda}
         />
         <Summary
           icon={Clock3}
-          label={isToday ? "Turno atual" : "Referência do mapa"}
-          value={isToday ? currentShift(state) : dayStartTime}
+          label="Turno selecionado"
+          value={`${selectedShift.startTime} às ${selectedShift.endTime}`}
           tone="violet"
         />
       </div>
@@ -1510,7 +1674,7 @@ function RoomMap({
         <div className="search">
           <Search size={18} />
           <input
-            placeholder="Buscar sala ou localidade"
+            placeholder="Buscar sala, localidade, nome ou usuário"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
           />
@@ -1543,12 +1707,21 @@ function RoomMap({
           {filtered.map((room) => {
             const current = currentFor(room.id);
             const next = nextFor(room.id);
+            const roomShiftReservations = shiftReservationsFor(room.id);
+            const hasReservation = roomShiftReservations.length > 0;
+            const matchedUsers = query.trim()
+              ? roomShiftReservations.filter((reservation) =>
+                  `${reservation.userName} ${reservation.userUsername || ""}`
+                    .toLowerCase()
+                    .includes(query.trim().toLowerCase()),
+                )
+              : [];
             const issues = state.issues.filter(
               (issue) => issue.roomId === room.id && issue.status === "open",
             );
             return (
               <article
-                className={`room-card ${current ? "reserved" : "free"}`}
+                className={`room-card ${hasReservation ? "reserved" : "free"}`}
                 key={room.id}
               >
                 <div className="room-card-head">
@@ -1562,12 +1735,12 @@ function RoomMap({
                   <span className="status-dot">
                     <i />
                     {current
-                      ? isToday
+                      ? referenceIsNow
                         ? "Reservada agora"
-                        : `Reservada ${referenceLabel}`
-                      : isToday
-                        ? "Disponível agora"
-                        : `Disponível ${referenceLabel}`}
+                        : `Reservada às ${selectedShift.startTime}`
+                      : hasReservation
+                        ? `${roomShiftReservations.length} reserva${roomShiftReservations.length > 1 ? "s" : ""} no turno`
+                        : "Livre durante o turno"}
                   </span>
                 </div>
                 <button
@@ -1594,6 +1767,19 @@ function RoomMap({
                     <Monitor size={15} /> {room.workstations} PAs
                   </span>
                 </div>
+                {matchedUsers.length > 0 && (
+                  <div className="user-search-hit">
+                    <Search size={15} />
+                    <div>
+                      <strong>{matchedUsers[0].userName}</strong>
+                      <span>
+                        @{matchedUsers[0].userUsername || "usuário"} •{" "}
+                        {time(matchedUsers[0].startsAt)} às{" "}
+                        {time(matchedUsers[0].endsAt)}
+                      </span>
+                    </div>
+                  </div>
+                )}
                 {issues.length > 0 && (
                   <button
                     className="issue-banner"
@@ -1630,9 +1816,27 @@ function RoomMap({
                       <small>
                         {next
                           ? `Disponível até ${time(next.startsAt)}`
-                          : "Sem outra reserva neste dia"}
+                          : `Disponível até ${selectedShift.endTime}`}
                       </small>
                     </div>
+                  </div>
+                )}
+                {roomShiftReservations.length > 0 && (
+                  <div className="shift-bookings">
+                    <span>Agenda do turno</span>
+                    {roomShiftReservations.slice(0, 3).map((reservation) => (
+                      <div key={reservation.id}>
+                        <strong>
+                          {time(reservation.startsAt)} às {time(reservation.endsAt)}
+                        </strong>
+                        <small>{reservation.userName}</small>
+                      </div>
+                    ))}
+                    {roomShiftReservations.length > 3 && (
+                      <small>
+                        + {roomShiftReservations.length - 3} reserva(s)
+                      </small>
+                    )}
                   </div>
                 )}
                 <button
@@ -1694,18 +1898,6 @@ function Summary({
     </button>
   ) : (
     <div className="summary">{content}</div>
-  );
-}
-function currentShift(state: AppState) {
-  const local = new Intl.DateTimeFormat("pt-BR", {
-    timeZone: "America/Bahia",
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-  }).format(new Date(state.now));
-  return (
-    state.shifts.find((s) => local >= s.startTime && local <= s.endTime)
-      ?.name || "Intervalo"
   );
 }
 function time(value: string) {
@@ -2458,6 +2650,13 @@ function UsersAdmin({
   onReset: (u: AppState["users"][number]) => void;
   onDelete: (u: AppState["users"][number]) => void;
 }) {
+  const [query, setQuery] = useState("");
+  const normalizedQuery = query.trim().toLowerCase();
+  const filteredUsers = state.users.filter((user) =>
+    `${user.name} ${user.username} ${user.roleName}`
+      .toLowerCase()
+      .includes(normalizedQuery),
+  );
   return (
     <div className="panel">
       <div className="panel-head">
@@ -2471,8 +2670,21 @@ function UsersAdmin({
           </button>
         )}
       </div>
+      <div className="user-admin-search">
+        <div className="search">
+          <Search size={18} />
+          <input
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="Buscar por nome ou nome de usuário"
+          />
+        </div>
+        <span>
+          {filteredUsers.length} de {state.users.length} usuário(s)
+        </span>
+      </div>
       <div className="data-list">
-        {state.users.map((user) => (
+        {filteredUsers.map((user) => (
           <div
             className={`data-row ${!user.active ? "muted-row" : ""}`}
             key={user.id}
@@ -2535,7 +2747,151 @@ function UsersAdmin({
               )}
           </div>
         ))}
+        {filteredUsers.length === 0 && (
+          <Empty
+            icon={Search}
+            title="Nenhum usuário encontrado"
+            text="Tente pesquisar por outro nome ou nome de usuário."
+          />
+        )}
       </div>
+    </div>
+  );
+}
+
+function DevelopmentTeamView({
+  state,
+  canEdit,
+  onNew,
+  onEdit,
+  onDelete,
+  onFeedbackStatus,
+}: {
+  state: AppState;
+  canEdit: boolean;
+  onNew: () => void;
+  onEdit: (member: AppState["developmentTeam"][number]) => void;
+  onDelete: (member: AppState["developmentTeam"][number]) => void;
+  onFeedbackStatus: (
+    report: AppState["feedbackReports"][number],
+    status: AppState["feedbackReports"][number]["status"],
+  ) => void;
+}) {
+  return (
+    <div className="development-page">
+      <section className="panel">
+        <div className="panel-head">
+          <div>
+            <h2>Equipe de desenvolvimento</h2>
+            <p>Contribuições complementares apresentadas com o mesmo destaque.</p>
+          </div>
+          {canEdit && (
+            <button className="btn btn-primary" onClick={onNew}>
+              <Plus size={17} /> Adicionar integrante
+            </button>
+          )}
+        </div>
+        <div className="development-grid">
+          {state.developmentTeam.map((member) => (
+            <article className="development-card" key={member.id}>
+              <div className="development-avatar">
+                {member.name
+                  .split(" ")
+                  .slice(0, 2)
+                  .map((part) => part[0])
+                  .join("")}
+              </div>
+              <h3>{member.name}</h3>
+              <p>{member.role}</p>
+              <div className="development-contacts">
+                {member.email && (
+                  <a href={`mailto:${member.email}`}>
+                    <Mail size={15} /> {member.email}
+                  </a>
+                )}
+                {member.phone && (
+                  <a href={`tel:${member.phone.replace(/[^\d+]/g, "")}`}>
+                    <Phone size={15} /> {member.phone}
+                  </a>
+                )}
+                {member.profileUrl && (
+                  <a href={member.profileUrl} target="_blank" rel="noreferrer">
+                    <ExternalLink size={15} /> Perfil profissional
+                  </a>
+                )}
+              </div>
+              {canEdit && (
+                <div className="development-actions">
+                  <button className="btn btn-soft" onClick={() => onEdit(member)}>
+                    Editar perfil
+                  </button>
+                  <button
+                    className="icon-btn danger"
+                    title={`Remover ${member.name}`}
+                    onClick={() => onDelete(member)}
+                  >
+                    <Trash2 size={16} />
+                  </button>
+                </div>
+              )}
+            </article>
+          ))}
+        </div>
+      </section>
+      {canEdit && (
+        <section className="panel feedback-admin-panel">
+          <div className="panel-head">
+            <div>
+              <h2>Relatos recebidos</h2>
+              <p>Bugs e sugestões enviados pelo menu e pela tela de login.</p>
+            </div>
+          </div>
+          {state.feedbackReports.length ? (
+            <div className="feedback-report-list">
+              {state.feedbackReports.map((report) => (
+                <article key={report.id}>
+                  <div className="feedback-report-icon">
+                    {report.type === "bug" ? (
+                      <Bug size={18} />
+                    ) : (
+                      <Lightbulb size={18} />
+                    )}
+                  </div>
+                  <div className="grow">
+                    <strong>{report.title}</strong>
+                    <p>{report.description}</p>
+                    <small>
+                      {report.reporterName || "Pessoa não identificada"}
+                      {report.reporterEmail ? ` • ${report.reporterEmail}` : ""}
+                      {` • ${dateLabel(report.createdAt)}`}
+                    </small>
+                  </div>
+                  <select
+                    aria-label={`Status de ${report.title}`}
+                    value={report.status}
+                    onChange={(event) =>
+                      onFeedbackStatus(
+                        report,
+                        event.target.value as typeof report.status,
+                      )
+                    }
+                  >
+                    <option value="open">Aberto</option>
+                    <option value="in_review">Em análise</option>
+                    <option value="resolved">Resolvido</option>
+                  </select>
+                </article>
+              ))}
+            </div>
+          ) : (
+            <Empty
+              icon={Check}
+              title="Nenhum relato recebido"
+              text="Novos bugs e sugestões aparecerão aqui."
+            />
+          )}
+        </section>
+      )}
     </div>
   );
 }
@@ -4380,6 +4736,288 @@ function RoomModal({
         </div>
         <ModalActions onClose={onClose} submit="Salvar sala" />
       </form>
+    </Modal>
+  );
+}
+
+function DevelopmentMemberModal({
+  member,
+  onClose,
+  onSave,
+}: {
+  member?: AppState["developmentTeam"][number];
+  onClose: () => void;
+  onSave: (value: unknown) => void;
+}) {
+  const [name, setName] = useState(member?.name || "");
+  const [role, setRole] = useState(member?.role || "");
+  const [email, setEmail] = useState(member?.email || "");
+  const [phone, setPhone] = useState(member?.phone || "");
+  const [profileUrl, setProfileUrl] = useState(member?.profileUrl || "");
+  const [displayOrder, setDisplayOrder] = useState(member?.displayOrder || 0);
+  return (
+    <Modal
+      title={member ? "Editar integrante" : "Adicionar integrante"}
+      subtitle="Atualize os dados profissionais e os canais de contato."
+      onClose={onClose}
+    >
+      <form
+        className="modal-form"
+        onSubmit={(event) => {
+          event.preventDefault();
+          onSave({
+            id: member?.id,
+            name,
+            role,
+            email,
+            phone,
+            profileUrl,
+            displayOrder,
+          });
+        }}
+      >
+        <label>
+          Nome
+          <input value={name} onChange={(event) => setName(event.target.value)} required />
+        </label>
+        <label>
+          Atuação
+          <input
+            value={role}
+            onChange={(event) => setRole(event.target.value)}
+            placeholder="Ex.: Produto | UI | UX"
+            required
+          />
+        </label>
+        <div className="form-grid">
+          <label>
+            E-mail
+            <input
+              type="email"
+              value={email}
+              onChange={(event) => setEmail(event.target.value)}
+              placeholder="nome@empresa.com"
+            />
+          </label>
+          <label>
+            Telefone
+            <input
+              type="tel"
+              value={phone}
+              onChange={(event) => setPhone(event.target.value)}
+              placeholder="(71) 99999-9999"
+            />
+          </label>
+        </div>
+        <div className="form-grid">
+          <label>
+            Link profissional
+            <input
+              type="url"
+              value={profileUrl}
+              onChange={(event) => setProfileUrl(event.target.value)}
+              placeholder="https://..."
+            />
+          </label>
+          <label>
+            Ordem de exibição
+            <input
+              type="number"
+              min={0}
+              max={999}
+              value={displayOrder}
+              onChange={(event) => setDisplayOrder(Number(event.target.value))}
+            />
+          </label>
+        </div>
+        <small className="field-help">
+          Todos os perfis usam o mesmo tamanho e o mesmo nível de destaque.
+        </small>
+        <ModalActions onClose={onClose} submit="Salvar perfil" />
+      </form>
+    </Modal>
+  );
+}
+
+function FeedbackModal({
+  currentUserName,
+  onClose,
+  onSave,
+}: {
+  currentUserName?: string;
+  onClose: () => void;
+  onSave: (value: unknown) => Promise<void>;
+}) {
+  const [type, setType] = useState<"bug" | "suggestion">("bug");
+  const [title, setTitle] = useState("");
+  const [description, setDescription] = useState("");
+  const [reporterName, setReporterName] = useState(currentUserName || "");
+  const [reporterEmail, setReporterEmail] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  return (
+    <Modal
+      title="Reportar bug ou sugerir melhoria"
+      subtitle="Sua mensagem será encaminhada à equipe de desenvolvimento."
+      onClose={onClose}
+    >
+      <form
+        className="modal-form"
+        onSubmit={async (event) => {
+          event.preventDefault();
+          setBusy(true);
+          setError("");
+          try {
+            await onSave({
+              type,
+              title,
+              description,
+              reporterName,
+              reporterEmail,
+              website: "",
+            });
+          } catch (submitError) {
+            setError(
+              submitError instanceof Error
+                ? submitError.message
+                : "Não foi possível enviar o relato.",
+            );
+          } finally {
+            setBusy(false);
+          }
+        }}
+      >
+        <div className="feedback-type-selector">
+          <button
+            type="button"
+            className={type === "bug" ? "active" : ""}
+            onClick={() => setType("bug")}
+          >
+            <Bug size={17} /> Reportar bug
+          </button>
+          <button
+            type="button"
+            className={type === "suggestion" ? "active" : ""}
+            onClick={() => setType("suggestion")}
+          >
+            <Lightbulb size={17} /> Sugerir melhoria
+          </button>
+        </div>
+        {!currentUserName && (
+          <label>
+            Seu nome
+            <input
+              value={reporterName}
+              onChange={(event) => setReporterName(event.target.value)}
+              required
+            />
+          </label>
+        )}
+        <label>
+          E-mail para contato, opcional
+          <input
+            type="email"
+            value={reporterEmail}
+            onChange={(event) => setReporterEmail(event.target.value)}
+          />
+        </label>
+        <label>
+          Título
+          <input
+            value={title}
+            onChange={(event) => setTitle(event.target.value)}
+            minLength={3}
+            maxLength={140}
+            required
+          />
+        </label>
+        <label>
+          Descrição
+          <textarea
+            value={description}
+            onChange={(event) => setDescription(event.target.value)}
+            minLength={10}
+            maxLength={5000}
+            placeholder="Explique o que aconteceu ou como a melhoria poderia funcionar."
+            required
+          />
+        </label>
+        {error && <p className="form-error">{error}</p>}
+        <div className="modal-actions">
+          <button type="button" className="btn btn-soft" onClick={onClose}>
+            Cancelar
+          </button>
+          <button className="btn btn-primary" disabled={busy}>
+            {busy ? "Enviando..." : "Enviar relato"}
+          </button>
+        </div>
+      </form>
+    </Modal>
+  );
+}
+
+function NotificationsModal({
+  state,
+  pushAvailable,
+  pushActive,
+  onClose,
+  onMarkAll,
+  onEnablePush,
+  onTestPush,
+}: {
+  state: AppState;
+  pushAvailable: boolean;
+  pushActive: boolean;
+  onClose: () => void;
+  onMarkAll: () => Promise<void>;
+  onEnablePush: () => Promise<void>;
+  onTestPush: () => Promise<void>;
+}) {
+  const unread = state.notifications.filter((notification) => !notification.readAt);
+  return (
+    <Modal
+      title="Notificações"
+      subtitle="Atualizações de solicitações, reservas e agenda."
+      onClose={onClose}
+    >
+      <div className="notifications-toolbar">
+        {unread.length > 0 && (
+          <button className="btn btn-soft" onClick={() => void onMarkAll()}>
+            <Check size={16} /> Marcar todas como lidas
+          </button>
+        )}
+        {pushAvailable && (
+          <button
+            className="btn btn-soft"
+            onClick={() => void (pushActive ? onTestPush() : onEnablePush())}
+          >
+            <Bell size={16} /> {pushActive ? "Testar Push" : "Ativar Push"}
+          </button>
+        )}
+      </div>
+      {state.notifications.length ? (
+        <div className="notification-list">
+          {state.notifications.map((notification) => (
+            <article
+              className={notification.readAt ? "" : "unread"}
+              key={notification.id}
+            >
+              <span className="notification-dot" />
+              <div>
+                <strong>{notification.title}</strong>
+                <p>{notification.body}</p>
+                <small>{dateLabel(notification.createdAt)}</small>
+              </div>
+            </article>
+          ))}
+        </div>
+      ) : (
+        <Empty
+          icon={Bell}
+          title="Nenhuma notificação"
+          text="As atualizações das suas reservas aparecerão aqui."
+        />
+      )}
     </Modal>
   );
 }

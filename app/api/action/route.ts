@@ -8,9 +8,9 @@ import {
 } from "@/lib/security-options";
 import { PERMISSIONS, type Permission } from "@/lib/types";
 import {
-  pushToAnyRoomRequesters,
-  pushToPermission,
-  pushToUsers,
+  notifyAnyRoomRequesters,
+  notifyPermission,
+  notifyUsers,
 } from "@/lib/push";
 
 function fail(error: string, status = 400) {
@@ -102,7 +102,7 @@ export async function POST(request: NextRequest) {
         ],
       );
       await audit(`Solicitação de sala criada para ${fields.requestedDate}`);
-      await pushToPermission("booking.review", {
+      await notifyPermission("booking.review", {
         title: "Nova solicitação de sala",
         body: `${actor.name} solicitou ${fields.roomId ? "uma sala específica" : "qualquer sala disponível"} para ${fields.requestedDate}.`,
         url: "/",
@@ -119,7 +119,7 @@ export async function POST(request: NextRequest) {
           ],
         );
         if (available.length)
-          await pushToUsers([String(actor.id)], {
+          await notifyUsers([String(actor.id)], {
             title: "Há sala disponível",
             body: `${available[0].name} está livre no período solicitado. A análise ainda é necessária.`,
             url: "/",
@@ -142,7 +142,7 @@ export async function POST(request: NextRequest) {
       }
       const updated = await db.query(
         `UPDATE booking_requests SET room_id=$1,reason=$2,requested_date=$3::date,start_time=$4,end_time=$5,
-        shareable=$6,expected_people=$7,updated_at=now() WHERE id=$8 AND status='pending' RETURNING id`,
+        shareable=$6,expected_people=$7,updated_at=now() WHERE id=$8 AND status='pending' RETURNING requester_id`,
         [
           fields.roomId,
           fields.reason,
@@ -157,6 +157,12 @@ export async function POST(request: NextRequest) {
       if (!updated.length)
         return fail("A solicitação não está mais pendente.", 409);
       await audit(`Solicitação de sala editada para ${fields.requestedDate}`);
+      await notifyUsers([String(updated[0].requester_id)], {
+        title: "Solicitação atualizada",
+        body: `Sua solicitação de ${fields.requestedDate}, das ${fields.startTime} às ${fields.endTime}, foi atualizada pela equipe responsável.`,
+        url: "/",
+        tag: `request-updated-${requestId}`,
+      });
     } else if (action === "request.review") {
       if (!requirePermission("booking.review"))
         return fail("Sem permissão para analisar solicitações.", 403);
@@ -199,7 +205,7 @@ export async function POST(request: NextRequest) {
         if (!rejected.length)
           return fail("A solicitação não está mais pendente.", 409);
         await audit(`Solicitação de ${fields.requestedDate} rejeitada`);
-        await pushToUsers([String(pending[0].requester_id)], {
+        await notifyUsers([String(pending[0].requester_id)], {
           title: "Solicitação analisada",
           body: `Sua solicitação de ${fields.requestedDate} foi rejeitada${comment ? `: ${comment}` : "."}`,
           url: "/",
@@ -251,7 +257,7 @@ export async function POST(request: NextRequest) {
         await audit(
           `Solicitação de ${fields.requestedDate} aprovada e convertida em reserva. ${Number(approved[0].displaced_count) || 0} reserva(s) anterior(es) substituída(s)`,
         );
-        await pushToUsers([String(pending[0].requester_id)], {
+        await notifyUsers([String(pending[0].requester_id)], {
           title: "Solicitação aprovada",
           body: `Sua sala foi reservada para ${fields.requestedDate}, das ${fields.startTime} às ${fields.endTime}${comment ? `. ${comment}` : "."}`,
           url: "/",
@@ -262,7 +268,7 @@ export async function POST(request: NextRequest) {
               .map(String)
               .filter((id: string) => id !== String(pending[0].requester_id))
           : [];
-        await pushToUsers(displacedUserIds, {
+        await notifyUsers(displacedUserIds, {
           title: "Reserva substituída",
           body: `Uma reserva anterior de ${fields.requestedDate}, das ${fields.startTime} às ${fields.endTime}, foi substituída por uma aprovação mais recente.`,
           url: "/",
@@ -273,7 +279,7 @@ export async function POST(request: NextRequest) {
       const requestId = String(body.id || "");
       const cancelled = await db.query(
         `UPDATE booking_requests SET status='cancelled',updated_at=now()
-        WHERE id=$1 AND status='pending' AND (requester_id=$2 OR $3::boolean) RETURNING id`,
+        WHERE id=$1 AND status='pending' AND (requester_id=$2 OR $3::boolean) RETURNING requester_id`,
         [requestId, actor.id, requirePermission("booking.review")],
       );
       if (!cancelled.length)
@@ -282,6 +288,12 @@ export async function POST(request: NextRequest) {
           403,
         );
       await audit("Solicitação de sala cancelada");
+      await notifyUsers([String(cancelled[0].requester_id)], {
+        title: "Solicitação cancelada",
+        body: "Sua solicitação de sala foi cancelada.",
+        url: "/",
+        tag: `request-cancelled-${requestId}`,
+      });
     } else if (action === "booking.create") {
       const canAll = requirePermission("booking.create_all");
       if (!canAll && !requirePermission("booking.create_own"))
@@ -312,11 +324,11 @@ export async function POST(request: NextRequest) {
           "Revise datas, sala, horários e motivo. O período máximo é de 30 dias.",
         );
       const [room, target] = await Promise.all([
-        db.query(`SELECT id FROM rooms WHERE id=$1 AND active=true LIMIT 1`, [
+        db.query(`SELECT id,name FROM rooms WHERE id=$1 AND active=true LIMIT 1`, [
           roomId,
         ]),
         db.query(
-          `SELECT id FROM users WHERE id=$1 AND active=true AND deleted_at IS NULL LIMIT 1`,
+          `SELECT id,name FROM users WHERE id=$1 AND active=true AND deleted_at IS NULL LIMIT 1`,
           [targetUser],
         ),
       ]);
@@ -361,11 +373,17 @@ export async function POST(request: NextRequest) {
             .map(String)
             .filter((id: string) => id !== String(targetUser))
         : [];
-      await pushToUsers(displacedUserIds, {
+      await notifyUsers(displacedUserIds, {
         title: "Reserva substituída",
         body: "Uma reserva anterior foi substituída por uma reserva mais recente no mesmo período.",
         url: "/",
         tag: "reservation-replaced",
+      });
+      await notifyUsers([String(targetUser)], {
+        title: "Reserva criada",
+        body: `${dates.length > 1 ? `${dates.length} reservas foram criadas` : "Uma reserva foi criada"} para você em ${room[0].name}, das ${startTime} às ${endTime}.`,
+        url: "/",
+        tag: `reservation-created-${roomId}-${dates[0]}`,
       });
     } else if (action === "booking.update") {
       const id = String(body.id || "");
@@ -399,7 +417,7 @@ export async function POST(request: NextRequest) {
       const targetUser =
         canManage && body.userId ? String(body.userId) : String(existing[0].user_id);
       const [room, target] = await Promise.all([
-        db.query(`SELECT id FROM rooms WHERE id=$1 AND active=true LIMIT 1`, [
+        db.query(`SELECT id,name FROM rooms WHERE id=$1 AND active=true LIMIT 1`, [
           roomId,
         ]),
         db.query(
@@ -444,18 +462,24 @@ export async function POST(request: NextRequest) {
             .map(String)
             .filter((userId: string) => userId !== targetUser)
         : [];
-      await pushToUsers(displacedUserIds, {
+      await notifyUsers(displacedUserIds, {
         title: "Reserva substituída",
         body: "Uma reserva anterior foi substituída por uma edição mais recente no mesmo período.",
         url: "/",
         tag: `reservation-replaced-${id}`,
       });
-      if (targetUser !== String(actor.id))
-        await pushToUsers([targetUser], {
-          title: "Reserva atualizada",
-          body: `Sua reserva de ${requestedDate}, das ${startTime} às ${endTime}, foi atualizada.`,
+      await notifyUsers([targetUser], {
+        title: "Reserva atualizada",
+        body: `Sua reserva em ${room[0].name}, de ${requestedDate}, das ${startTime} às ${endTime}, foi atualizada.`,
+        url: "/",
+        tag: `reservation-updated-${id}`,
+      });
+      if (String(existing[0].user_id) !== targetUser)
+        await notifyUsers([String(existing[0].user_id)], {
+          title: "Reserva transferida",
+          body: `A reserva de ${requestedDate}, das ${startTime} às ${endTime}, foi transferida para outra pessoa.`,
           url: "/",
-          tag: `reservation-updated-${id}`,
+          tag: `reservation-transferred-${id}`,
         });
     } else if (action === "booking.update_series") {
       const seriesId = String(body.seriesId || "");
@@ -499,7 +523,7 @@ export async function POST(request: NextRequest) {
       const targetUser =
         canManage && body.userId ? String(body.userId) : String(existing[0].user_id);
       const [room, target] = await Promise.all([
-        db.query(`SELECT id FROM rooms WHERE id=$1 AND active=true LIMIT 1`, [
+        db.query(`SELECT id,name FROM rooms WHERE id=$1 AND active=true LIMIT 1`, [
           roomId,
         ]),
         db.query(
@@ -555,23 +579,30 @@ export async function POST(request: NextRequest) {
             .map(String)
             .filter((userId: string) => userId !== targetUser)
         : [];
-      await pushToUsers(displacedUserIds, {
+      await notifyUsers(displacedUserIds, {
         title: "Reserva substituída",
         body: "Uma reserva anterior foi substituída pela edição de um período mais recente.",
         url: "/",
         tag: `reservation-series-replaced-${seriesId}`,
       });
-      if (targetUser !== String(actor.id))
-        await pushToUsers([targetUser], {
-          title: "Período de reservas atualizado",
-          body: `Seu período de reservas foi atualizado para ${dates.length} dia(s), das ${startTime} às ${endTime}.`,
+      await notifyUsers([targetUser], {
+        title: "Período de reservas atualizado",
+        body: `Seu período em ${room[0].name} foi atualizado para ${dates.length} dia(s), das ${startTime} às ${endTime}.`,
+        url: "/",
+        tag: `reservation-series-updated-${seriesId}`,
+      });
+      if (String(existing[0].user_id) !== targetUser)
+        await notifyUsers([String(existing[0].user_id)], {
+          title: "Período de reservas transferido",
+          body: "Seu período de reservas foi transferido para outra pessoa.",
           url: "/",
-          tag: `reservation-series-updated-${seriesId}`,
+          tag: `reservation-series-transferred-${seriesId}`,
         });
     } else if (action === "booking.cancel") {
       const id = String(body.id || "");
       const rows = await db.query(
-        `SELECT user_id FROM reservations WHERE id=$1 AND status='reserved' LIMIT 1`,
+        `SELECT rs.user_id,r.name room_name,rs.starts_at::date::text reservation_date FROM reservations rs
+         JOIN rooms r ON r.id=rs.room_id WHERE rs.id=$1 AND rs.status='reserved' LIMIT 1`,
         [id],
       );
       if (!rows.length) return fail("Reserva não encontrada.", 404);
@@ -585,12 +616,18 @@ export async function POST(request: NextRequest) {
         [id],
       );
       await audit("Reserva cancelada");
+      await notifyUsers([String(rows[0].user_id)], {
+        title: "Reserva cancelada",
+        body: `Sua reserva em ${rows[0].room_name}, de ${rows[0].reservation_date}, foi cancelada.`,
+        url: "/",
+        tag: `reservation-cancelled-${id}`,
+      });
       const cancelled = await db.query(
         `SELECT room_id,starts_at::date::text date FROM reservations WHERE id=$1`,
         [id],
       );
       if (cancelled.length)
-        await pushToAnyRoomRequesters(String(cancelled[0].date), {
+        await notifyAnyRoomRequesters(String(cancelled[0].date), {
           title: "Nova disponibilidade",
           body: "Uma reserva foi cancelada e pode haver sala livre no período que você solicitou.",
           url: "/",
@@ -600,7 +637,10 @@ export async function POST(request: NextRequest) {
       const seriesId = String(body.seriesId || "");
       if (!seriesId) return fail("Período de reserva inválido.");
       const owned = await db.query(
-        `SELECT user_id FROM reservations WHERE series_id=$1 AND status='reserved' LIMIT 1`,
+        `SELECT rs.user_id,r.name room_name,count(*)::int reservation_count
+         FROM reservations rs JOIN rooms r ON r.id=rs.room_id
+         WHERE rs.series_id=$1 AND rs.status='reserved' AND rs.ends_at>now()
+         GROUP BY rs.user_id,r.name LIMIT 1`,
         [seriesId],
       );
       if (!owned.length)
@@ -615,6 +655,73 @@ export async function POST(request: NextRequest) {
         [seriesId],
       );
       await audit(`${updated.length} reserva(s) do período cancelada(s)`);
+      await notifyUsers([String(owned[0].user_id)], {
+        title: "Período de reservas cancelado",
+        body: `${updated.length} reserva(s) do seu período em ${owned[0].room_name} foram canceladas.`,
+        url: "/",
+        tag: `reservation-series-cancelled-${seriesId}`,
+      });
+    } else if (action === "notification.read_all") {
+      await db.query(
+        `UPDATE notifications SET read_at=COALESCE(read_at,now()) WHERE user_id=$1`,
+        [actor.id],
+      );
+    } else if (action === "notification.read") {
+      await db.query(
+        `UPDATE notifications SET read_at=COALESCE(read_at,now()) WHERE id=$1 AND user_id=$2`,
+        [String(body.id || ""), actor.id],
+      );
+    } else if (action === "development_team.save") {
+      if (!actor.is_god)
+        return fail("Somente usuários God podem editar esta equipe.", 403);
+      const id = body.id ? String(body.id) : null;
+      const name = String(body.name || "").trim().slice(0, 120);
+      const role = String(body.role || "").trim().slice(0, 180);
+      const email = String(body.email || "").trim().toLowerCase().slice(0, 180);
+      const phone = String(body.phone || "").trim().slice(0, 40);
+      const profileUrl = String(body.profileUrl || "").trim().slice(0, 500);
+      const displayOrder = Math.max(0, Math.min(999, Number(body.displayOrder) || 0));
+      if (name.length < 2 || role.length < 2)
+        return fail("Informe o nome e a atuação do integrante.");
+      if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))
+        return fail("Informe um e-mail válido.");
+      if (profileUrl && !/^https?:\/\//i.test(profileUrl))
+        return fail("O link do perfil deve começar com http:// ou https://.");
+      if (id) {
+        const updatedMember = await db.query(
+          `UPDATE development_team SET name=$1,role=$2,email=$3,phone=$4,profile_url=$5,display_order=$6,updated_at=now()
+           WHERE id=$7 RETURNING id`,
+          [name, role, email, phone, profileUrl, displayOrder, id],
+        );
+        if (!updatedMember.length) return fail("Integrante não encontrado.", 404);
+      } else {
+        await db.query(
+          `INSERT INTO development_team(name,role,email,phone,profile_url,display_order) VALUES ($1,$2,$3,$4,$5,$6)`,
+          [name, role, email, phone, profileUrl, displayOrder],
+        );
+      }
+      await audit(`Perfil de desenvolvimento de ${name} salvo`);
+    } else if (action === "development_team.delete") {
+      if (!actor.is_god)
+        return fail("Somente usuários God podem editar esta equipe.", 403);
+      const removed = await db.query(
+        `DELETE FROM development_team WHERE id=$1 RETURNING name`,
+        [String(body.id || "")],
+      );
+      if (!removed.length) return fail("Integrante não encontrado.", 404);
+      await audit(`Integrante ${removed[0].name} removido da equipe de desenvolvimento`);
+    } else if (action === "feedback.status") {
+      if (!actor.is_god)
+        return fail("Somente usuários God podem atualizar relatos.", 403);
+      const status = String(body.status || "");
+      if (!["open", "in_review", "resolved"].includes(status))
+        return fail("Status de relato inválido.");
+      const updatedReport = await db.query(
+        `UPDATE feedback_reports SET status=$1,updated_at=now() WHERE id=$2 RETURNING title`,
+        [status, String(body.id || "")],
+      );
+      if (!updatedReport.length) return fail("Relato não encontrado.", 404);
+      await audit(`Relato ${updatedReport[0].title} atualizado para ${status}`);
     } else if (action === "room.save") {
       if (!requirePermission("room.manage"))
         return fail("Sem permissão para administrar salas.", 403);

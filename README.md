@@ -4,8 +4,6 @@ Aplicação web responsiva e instalável para gestão de salas, reservas, solici
 
 Produção: https://mappa-de-salas.vercel.app/
 
-Para manutenção por agentes de código, leia `CLAUDE.md` antes de qualquer alteração ou deploy.
-
 ## Desenvolvimento
 
 Requisitos: Node.js e pnpm.

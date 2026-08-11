@@ -114,6 +114,29 @@ async function initialize() {
   await db.query(`CREATE TABLE IF NOT EXISTS app_settings (
     key text PRIMARY KEY, value text NOT NULL, updated_at timestamptz NOT NULL DEFAULT now()
   )`);
+  await db.query(`CREATE TABLE IF NOT EXISTS development_team (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(), name text UNIQUE NOT NULL, role text NOT NULL,
+    email text NOT NULL DEFAULT '', phone text NOT NULL DEFAULT '', profile_url text NOT NULL DEFAULT '',
+    display_order int NOT NULL DEFAULT 0, created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now()
+  )`);
+  await db.query(`CREATE TABLE IF NOT EXISTS feedback_reports (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(), type text NOT NULL, title text NOT NULL, description text NOT NULL,
+    reporter_id uuid REFERENCES users(id), reporter_name text NOT NULL DEFAULT '', reporter_email text NOT NULL DEFAULT '',
+    status text NOT NULL DEFAULT 'open', created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now(),
+    CHECK (type IN ('bug','suggestion')), CHECK (status IN ('open','in_review','resolved'))
+  )`);
+  await db.query(
+    `CREATE INDEX IF NOT EXISTS feedback_reports_status_created_idx ON feedback_reports(status,created_at DESC)`,
+  );
+  await db.query(`CREATE TABLE IF NOT EXISTS notifications (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(), user_id uuid NOT NULL REFERENCES users(id),
+    title text NOT NULL, body text NOT NULL, url text NOT NULL DEFAULT '/', read_at timestamptz,
+    created_at timestamptz NOT NULL DEFAULT now()
+  )`);
+  await db.query(
+    `CREATE INDEX IF NOT EXISTS notifications_user_created_idx ON notifications(user_id,created_at DESC)`,
+  );
 
   const roles = [
     {
@@ -202,6 +225,13 @@ async function initialize() {
   );
   await db.query(
     `INSERT INTO shifts(name,start_time,end_time) VALUES ('Manhã','08:00','14:20'),('Tarde','14:40','21:00'),('Diurno','08:00','17:00'),('Dia todo','08:00','21:00') ON CONFLICT(name) DO NOTHING`,
+  );
+  await db.query(
+    `INSERT INTO development_team(name,role,display_order) VALUES
+      ('Samuel L. Carvalho','Eng. de Software | Full Stack',1),
+      ('Adryan Augusto','Analista de Projeto | UI | UX',2),
+      ('João Romero','Designer Gráfico | Produto',3)
+     ON CONFLICT(name) DO NOTHING`,
   );
 
   const ownerGodCount = await db.query(

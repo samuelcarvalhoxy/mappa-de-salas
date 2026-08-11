@@ -20,6 +20,9 @@ export async function GET() {
     requests: [],
     roles: [],
     users: [],
+    developmentTeam: [],
+    feedbackReports: [],
+    notifications: [],
     shifts: [],
     audit: [],
     pushPublicKey: process.env.VAPID_PUBLIC_KEY || "",
@@ -51,12 +54,23 @@ export async function GET() {
   const canReviewRequests =
     user.is_god || permissions.includes("booking.review");
   const canRequest = user.is_god || permissions.includes("booking.request");
-  const [rooms, reservations, issues, requests, shifts, roles, users, audit] =
-    await Promise.all([
+  const [
+    rooms,
+    reservations,
+    issues,
+    requests,
+    shifts,
+    roles,
+    users,
+    audit,
+    developmentTeam,
+    feedbackReports,
+    notifications,
+  ] = await Promise.all([
       db.query(
         `SELECT id,name,location,kind,capacity,resources,network_status,chairs,tables,workstations,active FROM rooms WHERE active=true ORDER BY location,name`,
       ),
-      db.query(`SELECT rs.id,rs.room_id,rs.user_id,u.name user_name,rs.reason,rs.starts_at,rs.ends_at,rs.shareable,
+      db.query(`SELECT rs.id,rs.room_id,rs.user_id,u.name user_name,u.username user_username,rs.reason,rs.starts_at,rs.ends_at,rs.shareable,
       rs.expected_people,rs.status,rs.created_by,c.name creator_name,rs.series_id FROM reservations rs JOIN users u ON u.id=rs.user_id
       JOIN users c ON c.id=rs.created_by WHERE rs.ends_at > now() - interval '45 days' AND rs.starts_at < now() + interval '120 days' AND rs.status NOT IN ('cancelled') ORDER BY rs.starts_at`),
       db.query(`SELECT ri.id,ri.room_id,ri.reporter_id,u.name reporter_name,ri.description,ri.ticket_opened,ri.ticket_reference,
@@ -97,6 +111,19 @@ export async function GET() {
             `SELECT a.id,coalesce(u.name,'Sistema') actor_name,a.action,a.details,a.created_at FROM audit_log a LEFT JOIN users u ON u.id=a.actor_id ORDER BY a.created_at DESC LIMIT 100`,
           )
         : Promise.resolve([]),
+      db.query(
+        `SELECT id,name,role,email,phone,profile_url,display_order FROM development_team ORDER BY display_order,name`,
+      ),
+      user.is_god
+        ? db.query(
+            `SELECT id,type,title,description,reporter_name,reporter_email,status,created_at
+             FROM feedback_reports ORDER BY CASE status WHEN 'open' THEN 0 WHEN 'in_review' THEN 1 ELSE 2 END,created_at DESC LIMIT 100`,
+          )
+        : Promise.resolve([]),
+      db.query(
+        `SELECT id,title,body,url,read_at,created_at FROM notifications WHERE user_id=$1 ORDER BY created_at DESC LIMIT 50`,
+        [user.id],
+      ),
     ]);
   return NextResponse.json({
     configured: true,
@@ -130,6 +157,7 @@ export async function GET() {
       roomId: r.room_id,
       userId: r.user_id,
       userName: r.user_name,
+      userUsername: r.user_username,
       reason: r.reason,
       startsAt: r.starts_at,
       endsAt: r.ends_at,
@@ -189,6 +217,33 @@ export async function GET() {
       isGod: u.is_god,
       isOwnerGod: u.is_owner_god,
       hasSecurityAnswers: Number(u.security_answer_count) >= 2,
+    })),
+    developmentTeam: developmentTeam.map((member) => ({
+      id: member.id,
+      name: member.name,
+      role: member.role,
+      email: member.email,
+      phone: member.phone,
+      profileUrl: member.profile_url,
+      displayOrder: Number(member.display_order),
+    })),
+    feedbackReports: feedbackReports.map((report) => ({
+      id: report.id,
+      type: report.type,
+      title: report.title,
+      description: report.description,
+      reporterName: report.reporter_name,
+      reporterEmail: report.reporter_email,
+      status: report.status,
+      createdAt: report.created_at,
+    })),
+    notifications: notifications.map((notification) => ({
+      id: notification.id,
+      title: notification.title,
+      body: notification.body,
+      url: notification.url,
+      readAt: notification.read_at,
+      createdAt: notification.created_at,
     })),
     audit: audit.map((item) => ({
       id: item.id,

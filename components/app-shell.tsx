@@ -1045,7 +1045,7 @@ export function AppShell() {
           {toast}
         </div>
       )}
-      {(canBookDirectly || canRequest) && (
+      {!sidebar && (canBookDirectly || canRequest) && (
         <button
           className="agenda-fab"
           title="Abrir agenda"

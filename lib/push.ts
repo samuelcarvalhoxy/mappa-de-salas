@@ -2,7 +2,12 @@ import webpush from "web-push";
 import { sql } from "./db";
 import { getPushConfiguration } from "./settings";
 
-type PushPayload = { title: string; body: string; url?: string; tag?: string };
+export type PushPayload = {
+  title: string;
+  body: string;
+  url?: string;
+  tag?: string;
+};
 export type PushDeliveryResult = {
   configured: boolean;
   subscriptions: number;
@@ -115,6 +120,48 @@ export async function pushToUsers(userIds: string[], payload: PushPayload) {
     );
     return { ...emptyDelivery(false), failed: 1 };
   }
+}
+
+export async function notifyUsers(userIds: string[], payload: PushPayload) {
+  const uniqueUserIds = Array.from(new Set(userIds.filter(Boolean)));
+  if (!uniqueUserIds.length) return emptyDelivery(true);
+  await sql().query(
+    `INSERT INTO notifications(user_id,title,body,url)
+     SELECT u.id,$2,$3,$4 FROM users u
+     WHERE u.id=ANY($1::uuid[]) AND u.active=true AND u.deleted_at IS NULL`,
+    [uniqueUserIds, payload.title, payload.body, payload.url || "/"],
+  );
+  return pushToUsers(uniqueUserIds, payload);
+}
+
+export async function notifyPermission(
+  permission: string,
+  payload: PushPayload,
+) {
+  const users = await sql().query(
+    `SELECT DISTINCT u.id FROM users u JOIN roles r ON r.id=u.role_id
+     WHERE u.active=true AND u.deleted_at IS NULL AND (u.is_god=true OR r.permissions ? $1)`,
+    [permission],
+  );
+  return notifyUsers(
+    users.map((user) => String(user.id)),
+    payload,
+  );
+}
+
+export async function notifyAnyRoomRequesters(
+  requestedDate: string,
+  payload: PushPayload,
+) {
+  const users = await sql().query(
+    `SELECT DISTINCT requester_id id FROM booking_requests
+     WHERE status='pending' AND room_id IS NULL AND requested_date=$1::date`,
+    [requestedDate],
+  );
+  return notifyUsers(
+    users.map((user) => String(user.id)),
+    payload,
+  );
 }
 
 export async function pushToPermission(

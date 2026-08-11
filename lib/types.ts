@@ -47,6 +47,7 @@ export type Reservation = {
   roomName?: string;
   userId: string;
   userName: string;
+  userUsername?: string;
   reason: string;
   startsAt: string;
   endsAt: string;
@@ -56,6 +57,36 @@ export type Reservation = {
   createdBy: string;
   creatorName: string;
   seriesId: string | null;
+};
+
+export type DevelopmentMember = {
+  id: string;
+  name: string;
+  role: string;
+  email: string;
+  phone: string;
+  profileUrl: string;
+  displayOrder: number;
+};
+
+export type FeedbackReport = {
+  id: string;
+  type: "bug" | "suggestion";
+  title: string;
+  description: string;
+  reporterName: string;
+  reporterEmail: string;
+  status: "open" | "in_review" | "resolved";
+  createdAt: string;
+};
+
+export type SystemNotification = {
+  id: string;
+  title: string;
+  body: string;
+  url: string;
+  readAt: string | null;
+  createdAt: string;
 };
 
 export type RoomIssue = {
@@ -121,6 +152,9 @@ export type AppState = {
   requests: BookingRequest[];
   roles: Role[];
   users: ManagedUser[];
+  developmentTeam: DevelopmentMember[];
+  feedbackReports: FeedbackReport[];
+  notifications: SystemNotification[];
   shifts: { id: string; name: string; startTime: string; endTime: string }[];
   audit: {
     id: string;

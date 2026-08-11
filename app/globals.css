@@ -2227,9 +2227,13 @@ main {
     transform: translateX(-102%);
     transition: transform 0.25s;
     width: min(310px, 88vw);
+    z-index: 70;
   }
   .sidebar.open {
     transform: translateX(0);
+  }
+  .backdrop {
+    z-index: 65;
   }
   .topbar {
     height: 75px;

@@ -67,6 +67,24 @@ import {
   SECURITY_QUESTIONS,
   securityOptionsFor,
 } from "@/lib/security-options";
+import { useInstallPrompt, usePushNotifications } from "./pwa-hooks";
+import { Brand, Empty, Summary } from "./app-shell-parts";
+import {
+  addDays,
+  BLUE_ORANGE_PALETTE,
+  contrastRatio,
+  dateKey,
+  dateLabel,
+  DEFAULT_PALETTE,
+  durationLabel,
+  normalizedPalette,
+  requestDateLabel,
+  requestStatusLabel,
+  reservationShift,
+  statusLabel,
+  time,
+  type PaletteChoice,
+} from "./app-shell-utils";
 
 const EMPTY: AppState = {
   configured: true,
@@ -92,6 +110,7 @@ const PERMISSION_LABELS: Record<Permission, string> = {
   "booking.request": "Solicitar reserva de sala",
   "booking.review": "Analisar e decidir solicitações",
   "room.manage": "Cadastrar e editar salas",
+  "issue.resolve": "Resolver problemas reportados nas salas",
   "user.manage": "Cadastrar e editar usuários",
   "user.delete": "Excluir usuários",
   "security.reset": "Resetar respostas de segurança",
@@ -112,231 +131,6 @@ type StatsData = {
     averageMinutes: number;
   }[];
 };
-
-type PaletteChoice = {
-  primary: string;
-  accent: string;
-};
-
-const DEFAULT_PALETTE: PaletteChoice = {
-  primary: "#7C3AED",
-  accent: "#A78BFA",
-};
-
-const BLUE_ORANGE_PALETTE: PaletteChoice = {
-  primary: "#0A00BF",
-  accent: "#FF7900",
-};
-
-function isHexColor(value: string) {
-  return /^#[0-9a-f]{6}$/i.test(value);
-}
-
-function normalizedPalette(value: unknown): PaletteChoice | null {
-  if (!value || typeof value !== "object") return null;
-  const candidate = value as Partial<PaletteChoice>;
-  return isHexColor(candidate.primary || "") &&
-    isHexColor(candidate.accent || "")
-    ? {
-        primary: candidate.primary!.toUpperCase(),
-        accent: candidate.accent!.toUpperCase(),
-      }
-    : null;
-}
-
-function relativeLuminance(hex: string) {
-  const channels = [1, 3, 5].map((offset) => {
-    const value = Number.parseInt(hex.slice(offset, offset + 2), 16) / 255;
-    return value <= 0.04045
-      ? value / 12.92
-      : Math.pow((value + 0.055) / 1.055, 2.4);
-  });
-  return channels[0] * 0.2126 + channels[1] * 0.7152 + channels[2] * 0.0722;
-}
-
-function contrastRatio(hex: string, light = true) {
-  const luminance = relativeLuminance(hex);
-  const other = light ? 1 : 0;
-  return (
-    (Math.max(luminance, other) + 0.05) / (Math.min(luminance, other) + 0.05)
-  );
-}
-
-function Brand({ compact = false }: { compact?: boolean }) {
-  return (
-    <div className={`brand ${compact ? "brand-compact" : ""}`}>
-      <div className="brand-mark">
-        <DoorOpen size={22} />
-      </div>
-      {!compact && (
-        <div>
-          <strong>
-            M<span>app</span>a
-          </strong>
-          <small>de Salas</small>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function useInstallPrompt() {
-  const [prompt, setPrompt] = useState<
-    (Event & { prompt?: () => Promise<void> }) | null
-  >(null);
-  useEffect(() => {
-    const handler = (event: Event) => {
-      event.preventDefault();
-      setPrompt(event as Event & { prompt: () => Promise<void> });
-    };
-    window.addEventListener("beforeinstallprompt", handler);
-    if ("serviceWorker" in navigator)
-      navigator.serviceWorker.register("/sw.js").catch(() => null);
-    return () => window.removeEventListener("beforeinstallprompt", handler);
-  }, []);
-  return {
-    available: Boolean(prompt),
-    install: async () => {
-      await prompt?.prompt?.();
-      setPrompt(null);
-    },
-  };
-}
-
-function urlBase64ToUint8Array(value: string) {
-  const padded = `${value}${"=".repeat((4 - (value.length % 4)) % 4)}`
-    .replace(/-/g, "+")
-    .replace(/_/g, "/");
-  const raw = window.atob(padded);
-  return Uint8Array.from([...raw].map((character) => character.charCodeAt(0)));
-}
-
-function usePushNotifications(
-  publicKey: string,
-  onError: (message: string) => void,
-) {
-  const [permission, setPermission] = useState<
-    NotificationPermission | "unsupported"
-  >(() =>
-    typeof window !== "undefined" && "Notification" in window
-      ? Notification.permission
-      : "unsupported",
-  );
-  const [status, setStatus] = useState<
-    "idle" | "syncing" | "active" | "error"
-  >("idle");
-  const syncing = useRef(false);
-  const syncSubscription = useCallback(
-    async (sendTest = false, silent = false, forceNew = false) => {
-      if (syncing.current) return false;
-      syncing.current = true;
-      setStatus("syncing");
-      try {
-        if (!publicKey)
-          throw new Error("A chave pública de notificações não está disponível.");
-        if (!("serviceWorker" in navigator) || !("PushManager" in window))
-          throw new Error("Este navegador não oferece notificações push.");
-        await navigator.serviceWorker.register("/sw.js", {
-          updateViaCache: "none",
-        });
-        const registration = await navigator.serviceWorker.ready;
-        let subscription = await registration.pushManager.getSubscription();
-        const expectedKey = urlBase64ToUint8Array(publicKey);
-        if (subscription && !forceNew) {
-          const currentKey = subscription.options.applicationServerKey;
-          const currentBytes = currentKey ? new Uint8Array(currentKey) : null;
-          const sameKey =
-            currentBytes?.length === expectedKey.length &&
-            currentBytes.every((value, index) => value === expectedKey[index]);
-          if (!sameKey) {
-            await subscription.unsubscribe();
-            subscription = null;
-          }
-        }
-        if (subscription && forceNew) {
-          await subscription.unsubscribe();
-          subscription = null;
-        }
-        subscription =
-          subscription ||
-          (await registration.pushManager.subscribe({
-            userVisibleOnly: true,
-            applicationServerKey: expectedKey,
-          }));
-        await api("/api/push", {
-          action: "subscribe",
-          subscription: subscription.toJSON(),
-        });
-        setStatus("active");
-        if (sendTest) await api("/api/push", { action: "test" });
-        return true;
-      } catch (error) {
-        setStatus("error");
-        if (!silent)
-          onError(
-            error instanceof Error
-              ? error.message
-              : "Não foi possível ativar notificações.",
-          );
-        return false;
-      } finally {
-        syncing.current = false;
-      }
-    },
-    [onError, publicKey],
-  );
-
-  useEffect(() => {
-    if (permission !== "granted" || !publicKey) return;
-    const timer = window.setTimeout(() => {
-      void syncSubscription(false, true);
-    }, 0);
-    return () => window.clearTimeout(timer);
-  }, [permission, publicKey, syncSubscription]);
-
-  const enable = async () => {
-    try {
-      if (
-        !("Notification" in window) ||
-        !("serviceWorker" in navigator) ||
-        !("PushManager" in window)
-      )
-        throw new Error("Este navegador não oferece notificações push.");
-      const next = await Notification.requestPermission();
-      setPermission(next);
-      if (next !== "granted")
-        throw new Error("A permissão de notificações não foi concedida.");
-      return await syncSubscription(true, false, status === "error");
-    } catch (error) {
-      setStatus("error");
-      onError(
-        error instanceof Error
-          ? error.message
-          : "Não foi possível ativar notificações.",
-      );
-      return false;
-    }
-  };
-  const test = async () => {
-    const synchronized = await syncSubscription(false);
-    if (!synchronized) return false;
-    try {
-      await api("/api/push", { action: "test" });
-      return true;
-    } catch (error) {
-      const repaired = await syncSubscription(true, false, true);
-      if (repaired) return true;
-      setStatus("error");
-      onError(
-        error instanceof Error
-          ? error.message
-          : "Não foi possível enviar a notificação de teste.",
-      );
-      return false;
-    }
-  };
-  return { permission, status, enable, test };
-}
 
 async function api(path: string, body?: Record<string, unknown>) {
   const response = await fetch(
@@ -918,6 +712,7 @@ export function AppShell() {
           room={modal.data as Room}
           state={state}
           canSchedule={canBookDirectly || canRequest}
+          canResolveIssues={can("issue.resolve")}
           onClose={() => setModal(null)}
           onSchedule={(room) =>
             setModal({
@@ -1867,87 +1662,6 @@ function RoomMap({
   );
 }
 
-function Summary({
-  icon: Icon,
-  label,
-  value,
-  tone,
-  onClick,
-}: {
-  icon: typeof DoorOpen;
-  label: string;
-  value: string;
-  tone: string;
-  onClick?: () => void;
-}) {
-  const content = (
-    <>
-      <div className={`summary-icon ${tone}`}>
-        <Icon size={20} />
-      </div>
-      <div>
-        <span>{label}</span>
-        <strong>{value}</strong>
-      </div>
-    </>
-  );
-  return onClick ? (
-    <button className="summary summary-link" onClick={onClick}>
-      {content}
-      <ChevronRight className="summary-link-arrow" size={18} />
-    </button>
-  ) : (
-    <div className="summary">{content}</div>
-  );
-}
-function time(value: string) {
-  const date = new Date(value);
-  return Number.isNaN(date.getTime())
-    ? "Horário indisponível"
-    : new Intl.DateTimeFormat("pt-BR", {
-        timeZone: "America/Bahia",
-        hour: "2-digit",
-        minute: "2-digit",
-      }).format(date);
-}
-function dateLabel(value: string) {
-  const date = new Date(value);
-  return Number.isNaN(date.getTime())
-    ? "Data indisponível"
-    : new Intl.DateTimeFormat("pt-BR", {
-        timeZone: "America/Bahia",
-        day: "2-digit",
-        month: "short",
-        year: "numeric",
-      }).format(date);
-}
-function dateKey(value: string | Date) {
-  const parts = new Intl.DateTimeFormat("en-CA", {
-    timeZone: "America/Bahia",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).formatToParts(new Date(value));
-  const part = (type: Intl.DateTimeFormatPartTypes) =>
-    parts.find((item) => item.type === type)?.value || "";
-  return `${part("year")}-${part("month")}-${part("day")}`;
-}
-function addDays(date: string, amount: number) {
-  const next = new Date(`${date}T12:00:00-03:00`);
-  next.setUTCDate(next.getUTCDate() + amount);
-  return dateKey(next);
-}
-function statusLabel(status: Reservation["status"]) {
-  return status === "cancelled" ? "Cancelada" : "Reservada";
-}
-function reservationShift(state: AppState, reservation: Reservation) {
-  const start = time(reservation.startsAt);
-  return (
-    state.shifts.find(
-      (shift) => start >= shift.startTime && start <= shift.endTime,
-    )?.name || "Fora dos turnos"
-  );
-}
 async function exportAgenda(
   from: string,
   to: string,
@@ -2421,27 +2135,6 @@ function CalendarView({
       )}
     </div>
   );
-}
-
-function requestStatusLabel(status: BookingRequest["status"]) {
-  return status === "approved"
-    ? "Aprovada"
-    : status === "rejected"
-      ? "Rejeitada"
-      : status === "cancelled"
-        ? "Cancelada"
-        : "Pendente";
-}
-function requestDateLabel(value: string) {
-  const date = new Date(`${value}T12:00:00-03:00`);
-  return Number.isNaN(date.getTime())
-    ? value
-    : new Intl.DateTimeFormat("pt-BR", {
-        timeZone: "America/Bahia",
-        day: "2-digit",
-        month: "short",
-        year: "numeric",
-      }).format(date);
 }
 
 function RequestsView({
@@ -3170,15 +2863,6 @@ function StatsView({ state }: { state: AppState }) {
   );
 }
 
-function durationLabel(minutes: number) {
-  const safe = Math.max(0, Math.round(minutes || 0));
-  const hours = Math.floor(safe / 60);
-  const remainder = safe % 60;
-  return hours
-    ? `${hours}h ${String(remainder).padStart(2, "0")}min`
-    : `${remainder}min`;
-}
-
 function Modal({
   title,
   subtitle,
@@ -3212,6 +2896,7 @@ function RoomLifeModal({
   room,
   state,
   canSchedule,
+  canResolveIssues,
   onClose,
   onSchedule,
   onReport,
@@ -3220,6 +2905,7 @@ function RoomLifeModal({
   room: Room;
   state: AppState;
   canSchedule: boolean;
+  canResolveIssues: boolean;
   onClose: () => void;
   onSchedule: (room: Room) => void;
   onReport: (room: Room) => void;
@@ -3462,12 +3148,14 @@ function RoomLifeModal({
                         : " · sem chamado aberto"}
                     </small>
                   </div>
-                  <button
-                    className="btn btn-soft"
-                    onClick={() => onResolve(issue)}
-                  >
-                    Resolvido
-                  </button>
+                  {canResolveIssues && (
+                    <button
+                      className="btn btn-soft"
+                      onClick={() => onResolve(issue)}
+                    >
+                      Resolvido
+                    </button>
+                  )}
                 </article>
               ))}
             </div>
@@ -3832,6 +3520,14 @@ function BookingEditModal({
         onSubmit={(event) => {
           event.preventDefault();
           if (tooLong) return;
+          const confirmReplacement = conflicts.length > 0;
+          if (
+            confirmReplacement &&
+            !window.confirm(
+              `Esta alteração substituirá ${conflicts.length} reserva(s) anterior(es). Deseja realmente realizar esta ação?`,
+            )
+          )
+            return;
           onSave(
             scope === "series"
               ? {
@@ -3844,6 +3540,7 @@ function BookingEditModal({
                   dates,
                   shareable,
                   expectedPeople: people,
+                  confirmReplacement,
                 }
               : {
                   id: reservation.id,
@@ -3855,6 +3552,7 @@ function BookingEditModal({
                   endTime,
                   shareable,
                   expectedPeople: people,
+                  confirmReplacement,
                 },
             scope,
           );
@@ -4090,8 +3788,17 @@ function BookingModal({
         className="modal-form"
         onSubmit={(event) => {
           event.preventDefault();
-          if (!tooLong)
-            onSave({
+          if (tooLong) return;
+          const conflictCount = checks.filter(({ conflict }) => conflict).length;
+          const confirmReplacement = conflictCount > 0;
+          if (
+            confirmReplacement &&
+            !window.confirm(
+              `Esta reserva substituirá ${conflictCount} reserva(s) anterior(es). Deseja realmente realizar esta ação?`,
+            )
+          )
+            return;
+          onSave({
               roomId,
               reason,
               startTime,
@@ -4100,6 +3807,7 @@ function BookingModal({
               userId,
               shareable,
               expectedPeople: people,
+              confirmReplacement,
             });
         }}
       >
@@ -4452,7 +4160,7 @@ function RequestReviewModal({
       time(reservation.startsAt) < endTime &&
       time(reservation.endsAt) > startTime,
   );
-  const values = () => ({
+  const values = (confirmReplacement = false) => ({
     id: request.id,
     roomId: roomId || null,
     requestedDate,
@@ -4462,13 +4170,24 @@ function RequestReviewModal({
     shareable,
     expectedPeople: people,
     comment,
+    confirmReplacement,
   });
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const submitter = (event.nativeEvent as SubmitEvent)
       .submitter as HTMLButtonElement | null;
     const intent = submitter?.value || "save";
-    if (intent === "approved") onDecide(values(), "approved");
+    if (intent === "approved") {
+      const confirmReplacement = Boolean(reservationToReplace);
+      if (
+        confirmReplacement &&
+        !window.confirm(
+          "Esta aprovação substituirá uma reserva anterior. Deseja realmente realizar esta ação?",
+        )
+      )
+        return;
+      onDecide(values(confirmReplacement), "approved");
+    }
     else if (intent === "rejected") onDecide(values(), "rejected");
     else onSave(values());
   };
@@ -5241,25 +4960,6 @@ function ModalActions({
         Cancelar
       </button>
       <button className="btn btn-primary">{submit}</button>
-    </div>
-  );
-}
-function Empty({
-  icon: Icon,
-  title,
-  text,
-}: {
-  icon: typeof DoorOpen;
-  title: string;
-  text: string;
-}) {
-  return (
-    <div className="empty">
-      <div>
-        <Icon size={28} />
-      </div>
-      <h3>{title}</h3>
-      <p>{text}</p>
     </div>
   );
 }

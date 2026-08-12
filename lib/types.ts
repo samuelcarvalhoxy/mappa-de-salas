@@ -5,6 +5,7 @@ export const PERMISSIONS = [
   "booking.request",
   "booking.review",
   "room.manage",
+  "issue.resolve",
   "user.manage",
   "user.delete",
   "security.reset",

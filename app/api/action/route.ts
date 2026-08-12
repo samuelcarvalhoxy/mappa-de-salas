@@ -8,13 +8,29 @@ import {
 } from "@/lib/security-options";
 import { PERMISSIONS, type Permission } from "@/lib/types";
 import {
+  isValidDate,
+  isValidTimeRange,
+} from "@/lib/booking-validation";
+import {
   notifyAnyRoomRequesters,
   notifyPermission,
   notifyUsers,
 } from "@/lib/push";
+import { handleFacilityAction } from "@/lib/action-handlers/facilities";
 
 function fail(error: string, status = 400) {
   return NextResponse.json({ error }, { status });
+}
+
+function replacementConfirmationRequired(conflictCount: number) {
+  return NextResponse.json(
+    {
+      error: `${conflictCount} reserva(s) existente(s) coincidem com o período. Confirme explicitamente se realmente deseja substituí-las.`,
+      code: "RESERVATION_REPLACEMENT_CONFIRMATION_REQUIRED",
+      conflictCount,
+    },
+    { status: 409 },
+  );
 }
 
 function todayInBahia() {
@@ -46,11 +62,9 @@ function requestFields(body: Record<string, unknown>) {
 
 function validRequestFields(fields: ReturnType<typeof requestFields>) {
   return (
-    /^\d{4}-\d{2}-\d{2}$/.test(fields.requestedDate) &&
-    /^\d{2}:\d{2}$/.test(fields.startTime) &&
-    /^\d{2}:\d{2}$/.test(fields.endTime) &&
+    isValidDate(fields.requestedDate) &&
+    isValidTimeRange(fields.startTime, fields.endTime) &&
     fields.requestedDate >= todayInBahia() &&
-    fields.endTime > fields.startTime &&
     fields.reason.length >= 3
   );
 }
@@ -74,6 +88,16 @@ export async function POST(request: NextRequest) {
     );
 
   try {
+    const facilityResponse = await handleFacilityAction({
+      action,
+      body,
+      db,
+      actor,
+      requirePermission,
+      audit,
+    });
+    if (facilityResponse) return facilityResponse;
+
     if (action === "request.create") {
       if (!requirePermission("booking.request"))
         return fail("Seu perfil não pode solicitar salas.", 403);
@@ -221,21 +245,28 @@ export async function POST(request: NextRequest) {
         if (!room.length) return fail("Sala não encontrada ou inativa.", 404);
         const startsAt = `${fields.requestedDate}T${fields.startTime}:00-03:00`;
         const endsAt = `${fields.requestedDate}T${fields.endTime}:00-03:00`;
+        const confirmReplacement = body.confirmReplacement === true;
         const approved = await db.query(
-          `WITH approved_request AS (
+          `WITH conflicts AS (
+            SELECT id,user_id FROM reservations
+            WHERE room_id=$1 AND status='reserved' AND starts_at<$12::timestamptz AND ends_at>$11::timestamptz
+          ), approved_request AS (
             UPDATE booking_requests SET room_id=$1,reason=$2,requested_date=$3::date,start_time=$4,end_time=$5,shareable=$6,
               expected_people=$7,status='approved',review_comment=$8,reviewed_by=$9,reviewed_at=now(),updated_at=now()
-            WHERE id=$10 AND status='pending' RETURNING requester_id
+            WHERE id=$10 AND status='pending' AND ($13::boolean OR NOT EXISTS (SELECT 1 FROM conflicts)) RETURNING requester_id
           ), displaced AS (
             UPDATE reservations SET status='cancelled',updated_at=now()
-            WHERE room_id=$1 AND status='reserved' AND starts_at<$12::timestamptz AND ends_at>$11::timestamptz
-              AND EXISTS (SELECT 1 FROM approved_request)
+            WHERE id IN (SELECT id FROM conflicts) AND EXISTS (SELECT 1 FROM approved_request)
             RETURNING id,user_id
           ), created_reservation AS (
             INSERT INTO reservations(room_id,user_id,reason,starts_at,ends_at,shareable,expected_people,status,created_by)
             SELECT $1,requester_id,$2,$11::timestamptz,$12::timestamptz,$6,$7,'reserved',$9 FROM approved_request RETURNING id
-          ) UPDATE booking_requests SET approved_reservation_id=(SELECT id FROM created_reservation) WHERE id=$10 AND EXISTS (SELECT 1 FROM created_reservation)
-          RETURNING id,(SELECT count(*)::int FROM displaced) displaced_count,
+          ), linked_request AS (
+            UPDATE booking_requests SET approved_reservation_id=(SELECT id FROM created_reservation)
+            WHERE id=$10 AND EXISTS (SELECT 1 FROM created_reservation) RETURNING id
+          ) SELECT (SELECT count(*)::int FROM conflicts) conflict_count,
+            (SELECT count(*)::int FROM linked_request) approved_count,
+            (SELECT count(*)::int FROM displaced) displaced_count,
             COALESCE((SELECT array_agg(DISTINCT user_id::text) FROM displaced),'{}'::text[]) displaced_user_ids`,
           [
             fields.roomId,
@@ -250,9 +281,13 @@ export async function POST(request: NextRequest) {
             requestId,
             startsAt,
             endsAt,
+            confirmReplacement,
           ],
         );
-        if (!approved.length)
+        const conflictCount = Number(approved[0]?.conflict_count) || 0;
+        if (conflictCount && !confirmReplacement)
+          return replacementConfirmationRequired(conflictCount);
+        if (!Number(approved[0]?.approved_count))
           return fail("A solicitação não está mais pendente.", 409);
         await audit(
           `Solicitação de ${fields.requestedDate} aprovada e convertida em reserva. ${Number(approved[0].displaced_count) || 0} reserva(s) anterior(es) substituída(s)`,
@@ -310,14 +345,15 @@ export async function POST(request: NextRequest) {
       const startTime = String(body.startTime || "08:00");
       const endTime = String(body.endTime || "14:20");
       const reason = String(body.reason || "").trim();
+      const confirmReplacement = body.confirmReplacement === true;
       if (
         !dates.length ||
         dates.length > 30 ||
         !roomId ||
         reason.length < 3 ||
-        endTime <= startTime ||
+        !isValidTimeRange(startTime, endTime) ||
         dates.some(
-          (date) => !/^\d{4}-\d{2}-\d{2}$/.test(date) || date < todayInBahia(),
+          (date) => !isValidDate(date) || date < todayInBahia(),
         )
       )
         return fail(
@@ -340,18 +376,26 @@ export async function POST(request: NextRequest) {
         ), periods AS (
           SELECT (booking_date::text||'T'||$4||':00-03:00')::timestamptz starts_at,
                  (booking_date::text||'T'||$5||':00-03:00')::timestamptz ends_at FROM requested
+        ), conflicts AS (
+          SELECT DISTINCT rs.id,rs.user_id FROM reservations rs JOIN periods p
+            ON rs.starts_at<p.ends_at AND rs.ends_at>p.starts_at
+          WHERE rs.room_id=$2 AND rs.status='reserved'
+        ), permitted_periods AS (
+          SELECT p.* FROM periods p
+          WHERE $10::boolean OR NOT EXISTS (SELECT 1 FROM conflicts)
         ), displaced AS (
           UPDATE reservations rs SET status='cancelled',updated_at=now()
-          WHERE rs.room_id=$2 AND rs.status='reserved' AND EXISTS (
-            SELECT 1 FROM periods p WHERE rs.starts_at<p.ends_at AND rs.ends_at>p.starts_at
-          ) RETURNING rs.id,rs.user_id
+          WHERE rs.id IN (SELECT id FROM conflicts) AND $10::boolean
+            AND EXISTS (SELECT 1 FROM permitted_periods)
+          RETURNING rs.id,rs.user_id
         ), series AS (
           SELECT gen_random_uuid() id
         ), inserted AS (
           INSERT INTO reservations(room_id,user_id,reason,starts_at,ends_at,shareable,expected_people,status,created_by,series_id)
-          SELECT $2,$3,$6,p.starts_at,p.ends_at,$7,$8,'reserved',$9,s.id FROM periods p CROSS JOIN series s
+          SELECT $2,$3,$6,p.starts_at,p.ends_at,$7,$8,'reserved',$9,s.id FROM permitted_periods p CROSS JOIN series s
           RETURNING id
-        ) SELECT (SELECT count(*)::int FROM inserted) created_count,(SELECT count(*)::int FROM displaced) displaced_count,
+        ) SELECT (SELECT count(*)::int FROM conflicts) conflict_count,
+          (SELECT count(*)::int FROM inserted) created_count,(SELECT count(*)::int FROM displaced) displaced_count,
           COALESCE((SELECT array_agg(DISTINCT user_id::text) FROM displaced),'{}'::text[]) displaced_user_ids`,
         [
           dates,
@@ -363,8 +407,14 @@ export async function POST(request: NextRequest) {
           Boolean(body.shareable),
           Math.max(1, Number(body.expectedPeople) || 1),
           actor.id,
+          confirmReplacement,
         ],
       );
+      const conflictCount = Number(created[0]?.conflict_count) || 0;
+      if (conflictCount && !confirmReplacement)
+        return replacementConfirmationRequired(conflictCount);
+      if (!Number(created[0]?.created_count))
+        return fail("Nenhuma reserva foi criada.", 409);
       await audit(
         `${Number(created[0]?.created_count) || dates.length} reserva(s) criada(s). ${Number(created[0]?.displaced_count) || 0} reserva(s) anterior(es) substituída(s)`,
       );
@@ -392,15 +442,14 @@ export async function POST(request: NextRequest) {
       const startTime = String(body.startTime || "08:00");
       const endTime = String(body.endTime || "14:20");
       const reason = String(body.reason || "").trim();
+      const confirmReplacement = body.confirmReplacement === true;
       if (
         !id ||
         !roomId ||
         reason.length < 3 ||
-        !/^\d{4}-\d{2}-\d{2}$/.test(requestedDate) ||
+        !isValidDate(requestedDate) ||
         requestedDate < todayInBahia() ||
-        !/^\d{2}:\d{2}$/.test(startTime) ||
-        !/^\d{2}:\d{2}$/.test(endTime) ||
-        endTime <= startTime
+        !isValidTimeRange(startTime, endTime)
       )
         return fail("Revise a data, sala, horários e motivo da reserva.");
       const existing = await db.query(
@@ -430,16 +479,20 @@ export async function POST(request: NextRequest) {
       const startsAt = `${requestedDate}T${startTime}:00-03:00`;
       const endsAt = `${requestedDate}T${endTime}:00-03:00`;
       const updated = await db.query(
-        `WITH displaced AS (
-          UPDATE reservations rs SET status='cancelled',updated_at=now()
+        `WITH conflicts AS (
+          SELECT id,user_id FROM reservations rs
           WHERE rs.id<>$1 AND rs.room_id=$2 AND rs.status='reserved'
             AND rs.starts_at<$6::timestamptz AND rs.ends_at>$5::timestamptz
-          RETURNING rs.user_id
         ), edited AS (
           UPDATE reservations SET room_id=$2,user_id=$3,reason=$4,starts_at=$5::timestamptz,ends_at=$6::timestamptz,
             shareable=$7,expected_people=$8,updated_at=now()
-          WHERE id=$1 AND status='reserved' RETURNING id
-        ) SELECT (SELECT count(*)::int FROM edited) edited_count,(SELECT count(*)::int FROM displaced) displaced_count,
+          WHERE id=$1 AND status='reserved' AND ($9::boolean OR NOT EXISTS (SELECT 1 FROM conflicts)) RETURNING id
+        ), displaced AS (
+          UPDATE reservations rs SET status='cancelled',updated_at=now()
+          WHERE rs.id IN (SELECT id FROM conflicts) AND EXISTS (SELECT 1 FROM edited)
+          RETURNING rs.user_id
+        ) SELECT (SELECT count(*)::int FROM conflicts) conflict_count,
+          (SELECT count(*)::int FROM edited) edited_count,(SELECT count(*)::int FROM displaced) displaced_count,
           COALESCE((SELECT array_agg(DISTINCT user_id::text) FROM displaced),'{}'::text[]) displaced_user_ids`,
         [
           id,
@@ -450,8 +503,12 @@ export async function POST(request: NextRequest) {
           endsAt,
           Boolean(body.shareable),
           Math.max(1, Number(body.expectedPeople) || 1),
+          confirmReplacement,
         ],
       );
+      const conflictCount = Number(updated[0]?.conflict_count) || 0;
+      if (conflictCount && !confirmReplacement)
+        return replacementConfirmationRequired(conflictCount);
       if (!Number(updated[0]?.edited_count))
         return fail("A reserva não está mais disponível para edição.", 409);
       await audit(
@@ -494,15 +551,16 @@ export async function POST(request: NextRequest) {
       const startTime = String(body.startTime || "08:00");
       const endTime = String(body.endTime || "14:20");
       const reason = String(body.reason || "").trim();
+      const confirmReplacement = body.confirmReplacement === true;
       if (
         !seriesId ||
         !dates.length ||
         dates.length > 30 ||
         !roomId ||
         reason.length < 3 ||
-        endTime <= startTime ||
+        !isValidTimeRange(startTime, endTime) ||
         dates.some(
-          (date) => !/^\d{4}-\d{2}-\d{2}$/.test(date) || date < todayInBahia(),
+          (date) => !isValidDate(date) || date < todayInBahia(),
         )
       )
         return fail(
@@ -539,21 +597,27 @@ export async function POST(request: NextRequest) {
         ), periods AS (
           SELECT (booking_date::text||'T'||$5||':00-03:00')::timestamptz starts_at,
                  (booking_date::text||'T'||$6||':00-03:00')::timestamptz ends_at FROM requested
+        ), conflicts AS (
+          SELECT DISTINCT rs.id,rs.user_id FROM reservations rs JOIN periods p
+            ON rs.starts_at<p.ends_at AND rs.ends_at>p.starts_at
+          WHERE rs.room_id=$3 AND rs.status='reserved' AND rs.series_id IS DISTINCT FROM $2::uuid
+        ), eligible AS (
+          SELECT true allowed WHERE $11::boolean OR NOT EXISTS (SELECT 1 FROM conflicts)
         ), cancelled_series AS (
           UPDATE reservations SET status='cancelled',updated_at=now()
-          WHERE series_id=$2 AND status='reserved' AND ends_at>now() RETURNING id
+          WHERE series_id=$2 AND status='reserved' AND ends_at>now()
+            AND EXISTS (SELECT 1 FROM eligible) RETURNING id
         ), displaced AS (
           UPDATE reservations rs SET status='cancelled',updated_at=now()
-          WHERE rs.room_id=$3 AND rs.status='reserved' AND rs.series_id IS DISTINCT FROM $2::uuid
-            AND EXISTS (SELECT 1 FROM cancelled_series) AND EXISTS (
-            SELECT 1 FROM periods p WHERE rs.starts_at<p.ends_at AND rs.ends_at>p.starts_at
-          ) RETURNING rs.user_id
+          WHERE rs.id IN (SELECT id FROM conflicts) AND EXISTS (SELECT 1 FROM cancelled_series)
+          RETURNING rs.user_id
         ), inserted AS (
           INSERT INTO reservations(room_id,user_id,reason,starts_at,ends_at,shareable,expected_people,status,created_by,series_id)
           SELECT $3,$4,$7,p.starts_at,p.ends_at,$8,$9,'reserved',$10,$2::uuid FROM periods p
           WHERE EXISTS (SELECT 1 FROM cancelled_series)
           RETURNING id
-        ) SELECT (SELECT count(*)::int FROM inserted) created_count,(SELECT count(*)::int FROM cancelled_series) replaced_series_count,
+        ) SELECT (SELECT count(*)::int FROM conflicts) conflict_count,
+          (SELECT count(*)::int FROM inserted) created_count,(SELECT count(*)::int FROM cancelled_series) replaced_series_count,
           (SELECT count(*)::int FROM displaced) displaced_count,
           COALESCE((SELECT array_agg(DISTINCT user_id::text) FROM displaced),'{}'::text[]) displaced_user_ids`,
         [
@@ -567,8 +631,12 @@ export async function POST(request: NextRequest) {
           Boolean(body.shareable),
           Math.max(1, Number(body.expectedPeople) || 1),
           actor.id,
+          confirmReplacement,
         ],
       );
+      const conflictCount = Number(edited[0]?.conflict_count) || 0;
+      if (conflictCount && !confirmReplacement)
+        return replacementConfirmationRequired(conflictCount);
       if (!Number(edited[0]?.created_count))
         return fail("O período não está mais disponível para edição.", 409);
       await audit(
@@ -671,129 +739,6 @@ export async function POST(request: NextRequest) {
         `UPDATE notifications SET read_at=COALESCE(read_at,now()) WHERE id=$1 AND user_id=$2`,
         [String(body.id || ""), actor.id],
       );
-    } else if (action === "development_team.save") {
-      if (!actor.is_god)
-        return fail("Somente usuários God podem editar esta equipe.", 403);
-      const id = body.id ? String(body.id) : null;
-      const name = String(body.name || "").trim().slice(0, 120);
-      const role = String(body.role || "").trim().slice(0, 180);
-      const email = String(body.email || "").trim().toLowerCase().slice(0, 180);
-      const phone = String(body.phone || "").trim().slice(0, 40);
-      const profileUrl = String(body.profileUrl || "").trim().slice(0, 500);
-      const displayOrder = Math.max(0, Math.min(999, Number(body.displayOrder) || 0));
-      if (name.length < 2 || role.length < 2)
-        return fail("Informe o nome e a atuação do integrante.");
-      if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))
-        return fail("Informe um e-mail válido.");
-      if (profileUrl && !/^https?:\/\//i.test(profileUrl))
-        return fail("O link do perfil deve começar com http:// ou https://.");
-      if (id) {
-        const updatedMember = await db.query(
-          `UPDATE development_team SET name=$1,role=$2,email=$3,phone=$4,profile_url=$5,display_order=$6,updated_at=now()
-           WHERE id=$7 RETURNING id`,
-          [name, role, email, phone, profileUrl, displayOrder, id],
-        );
-        if (!updatedMember.length) return fail("Integrante não encontrado.", 404);
-      } else {
-        await db.query(
-          `INSERT INTO development_team(name,role,email,phone,profile_url,display_order) VALUES ($1,$2,$3,$4,$5,$6)`,
-          [name, role, email, phone, profileUrl, displayOrder],
-        );
-      }
-      await audit(`Perfil de desenvolvimento de ${name} salvo`);
-    } else if (action === "development_team.delete") {
-      if (!actor.is_god)
-        return fail("Somente usuários God podem editar esta equipe.", 403);
-      const removed = await db.query(
-        `DELETE FROM development_team WHERE id=$1 RETURNING name`,
-        [String(body.id || "")],
-      );
-      if (!removed.length) return fail("Integrante não encontrado.", 404);
-      await audit(`Integrante ${removed[0].name} removido da equipe de desenvolvimento`);
-    } else if (action === "feedback.status") {
-      if (!actor.is_god)
-        return fail("Somente usuários God podem atualizar relatos.", 403);
-      const status = String(body.status || "");
-      if (!["open", "in_review", "resolved"].includes(status))
-        return fail("Status de relato inválido.");
-      const updatedReport = await db.query(
-        `UPDATE feedback_reports SET status=$1,updated_at=now() WHERE id=$2 RETURNING title`,
-        [status, String(body.id || "")],
-      );
-      if (!updatedReport.length) return fail("Relato não encontrado.", 404);
-      await audit(`Relato ${updatedReport[0].title} atualizado para ${status}`);
-    } else if (action === "room.save") {
-      if (!requirePermission("room.manage"))
-        return fail("Sem permissão para administrar salas.", 403);
-      const id = body.id ? String(body.id) : null;
-      const name = String(body.name || "").trim();
-      if (name.length < 2) return fail("Informe o nome da sala.");
-      const infrastructure = [
-        String(body.networkStatus || "Não informado"),
-        Math.max(0, Number(body.chairs) || 0),
-        Math.max(0, Number(body.tables) || 0),
-        Math.max(0, Number(body.workstations) || 0),
-      ];
-      if (id)
-        await db.query(
-          `UPDATE rooms SET name=$1,location=$2,kind=$3,capacity=$4,resources=$5,network_status=$6,chairs=$7,tables=$8,workstations=$9 WHERE id=$10`,
-          [
-            name,
-            String(body.location || ""),
-            String(body.kind || "physical"),
-            Math.max(1, Number(body.capacity) || 1),
-            String(body.resources || ""),
-            ...infrastructure,
-            id,
-          ],
-        );
-      else
-        await db.query(
-          `INSERT INTO rooms(name,location,kind,capacity,resources,network_status,chairs,tables,workstations) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
-          [
-            name,
-            String(body.location || ""),
-            String(body.kind || "physical"),
-            Math.max(1, Number(body.capacity) || 1),
-            String(body.resources || ""),
-            ...infrastructure,
-          ],
-        );
-      await audit(`Sala ${name} salva`);
-    } else if (action === "room.disable") {
-      if (!requirePermission("room.manage")) return fail("Sem permissão.", 403);
-      await db.query(`UPDATE rooms SET active=false WHERE id=$1`, [
-        String(body.id || ""),
-      ]);
-      await audit("Sala desativada");
-    } else if (action === "issue.report") {
-      const roomId = String(body.roomId || "");
-      const description = String(body.description || "").trim();
-      const ticketOpened = Boolean(body.ticketOpened);
-      const ticketReference = String(body.ticketReference || "")
-        .trim()
-        .slice(0, 120);
-      if (!roomId || description.length < 5)
-        return fail("Descreva o problema da sala.");
-      const room = await db.query(
-        `SELECT name FROM rooms WHERE id=$1 AND active=true`,
-        [roomId],
-      );
-      if (!room.length) return fail("Sala não encontrada.", 404);
-      await db.query(
-        `INSERT INTO room_issues(room_id,reporter_id,description,ticket_opened,ticket_reference) VALUES ($1,$2,$3,$4,$5)`,
-        [roomId, actor.id, description, ticketOpened, ticketReference],
-      );
-      await audit(`Problema reportado em ${room[0].name}`);
-    } else if (action === "issue.resolve") {
-      const issueId = String(body.id || "");
-      const issue = await db.query(
-        `UPDATE room_issues SET status='resolved',resolved_by=$1,resolved_at=now() WHERE id=$2 AND status='open' RETURNING room_id`,
-        [actor.id, issueId],
-      );
-      if (!issue.length)
-        return fail("Problema não encontrado ou já resolvido.", 404);
-      await audit("Problema de sala marcado como resolvido");
     } else if (action === "user.password.change") {
       const currentPassword = String(body.currentPassword || "");
       const newPassword = String(body.newPassword || "");

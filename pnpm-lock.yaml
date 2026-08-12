@@ -4,6 +4,11 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
+patchedDependencies:
+  web-push@3.6.7:
+    hash: 62cbf9b30aa205e5ae4a0f12aaec42e373eb377e50e4d6cfb4b2e2cd6739e78e
+    path: patches/web-push@3.6.7.patch
+
 importers:
   .:
     dependencies:
@@ -33,7 +38,7 @@ importers:
         version: 19.2.3(react@19.2.3)
       web-push:
         specifier: ^3.6.7
-        version: 3.6.7
+        version: 3.6.7(patch_hash=62cbf9b30aa205e5ae4a0f12aaec42e373eb377e50e4d6cfb4b2e2cd6739e78e)
       zod:
         specifier: ^4.1.13
         version: 4.4.3
@@ -5929,7 +5934,7 @@ snapshots:
 
   uuid@8.3.2: {}
 
-  web-push@3.6.7:
+  web-push@3.6.7(patch_hash=62cbf9b30aa205e5ae4a0f12aaec42e373eb377e50e4d6cfb4b2e2cd6739e78e):
     dependencies:
       asn1.js: 5.4.1
       http_ece: 1.2.0

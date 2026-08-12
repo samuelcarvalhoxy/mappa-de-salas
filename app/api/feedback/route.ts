@@ -3,6 +3,7 @@ import { z } from "zod";
 import { getSessionUserId } from "@/lib/auth";
 import { ensureDatabase, getUserWithRole, sql } from "@/lib/db";
 import { notifyUsers } from "@/lib/push";
+import { checkFeedbackRateLimit } from "@/lib/feedback-rate-limit";
 
 const feedbackSchema = z.object({
   type: z.enum(["bug", "suggestion"]),
@@ -42,6 +43,19 @@ export async function POST(request: NextRequest) {
     return NextResponse.json(
       { error: "Informe seu nome para enviar o relato." },
       { status: 400 },
+    );
+
+  const rateLimit = await checkFeedbackRateLimit(request, sessionUserId);
+  if (!rateLimit.allowed)
+    return NextResponse.json(
+      {
+        error:
+          "Você enviou vários relatos em pouco tempo. Aguarde antes de tentar novamente.",
+      },
+      {
+        status: 429,
+        headers: { "Retry-After": String(rateLimit.retryAfter) },
+      },
     );
 
   const db = sql();

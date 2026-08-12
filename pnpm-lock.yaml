@@ -5,7 +5,9 @@ settings:
   excludeLinksFromLockfile: false
 
 patchedDependencies:
-  web-push@3.6.7: 62cbf9b30aa205e5ae4a0f12aaec42e373eb377e50e4d6cfb4b2e2cd6739e78e
+  web-push@3.6.7:
+    hash: 62cbf9b30aa205e5ae4a0f12aaec42e373eb377e50e4d6cfb4b2e2cd6739e78e
+    path: patches/web-push@3.6.7.patch
 
 importers:
   .:

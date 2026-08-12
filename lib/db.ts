@@ -5,13 +5,20 @@ import type { Permission } from "./types";
 let client: NeonQueryFunction<false, false> | null = null;
 let ready: Promise<void> | null = null;
 
+const PREVIEW_SCHEMA = "mappa_preview";
+
 export function hasDatabase() {
   return Boolean(process.env.DATABASE_URL);
 }
 
 export function sql() {
   if (!process.env.DATABASE_URL) throw new Error("DATABASE_NOT_CONFIGURED");
-  if (!client) client = neon(process.env.DATABASE_URL);
+  if (!client) {
+    const databaseUrl = new URL(process.env.DATABASE_URL);
+    if (process.env.VERCEL_ENV === "preview")
+      databaseUrl.searchParams.set("options", `--search_path=${PREVIEW_SCHEMA}`);
+    client = neon(databaseUrl.toString());
+  }
   return client;
 }
 
@@ -22,6 +29,12 @@ export async function ensureDatabase() {
 }
 
 async function initialize() {
+  if (process.env.VERCEL_ENV === "preview") {
+    const administrativeClient = neon(process.env.DATABASE_URL!);
+    await administrativeClient.query(
+      `CREATE SCHEMA IF NOT EXISTS ${PREVIEW_SCHEMA}`,
+    );
+  }
   const db = sql();
   await db.query(`CREATE TABLE IF NOT EXISTS roles (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(), name text UNIQUE NOT NULL, color text NOT NULL DEFAULT '#64748b',
@@ -129,6 +142,10 @@ async function initialize() {
   await db.query(
     `CREATE INDEX IF NOT EXISTS feedback_reports_status_created_idx ON feedback_reports(status,created_at DESC)`,
   );
+  await db.query(`CREATE TABLE IF NOT EXISTS feedback_rate_limits (
+    limiter_key text PRIMARY KEY, window_start timestamptz NOT NULL, request_count int NOT NULL DEFAULT 0,
+    updated_at timestamptz NOT NULL DEFAULT now()
+  )`);
   await db.query(`CREATE TABLE IF NOT EXISTS notifications (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(), user_id uuid NOT NULL REFERENCES users(id),
     title text NOT NULL, body text NOT NULL, url text NOT NULL DEFAULT '/', read_at timestamptz,
@@ -150,6 +167,7 @@ async function initialize() {
         "booking.request",
         "booking.review",
         "room.manage",
+        "issue.resolve",
         "user.manage",
         "user.delete",
         "security.reset",
@@ -197,7 +215,7 @@ async function initialize() {
     );
   }
   await db.query(
-    `UPDATE roles SET permissions=(SELECT jsonb_agg(DISTINCT value) FROM jsonb_array_elements(permissions || '["security.reset","user.delete","stats.view","booking.request","booking.review"]'::jsonb)) WHERE name='God'`,
+    `UPDATE roles SET permissions=(SELECT jsonb_agg(DISTINCT value) FROM jsonb_array_elements(permissions || '["security.reset","user.delete","stats.view","booking.request","booking.review","issue.resolve"]'::jsonb)) WHERE name='God'`,
   );
   await db.query(
     `UPDATE roles SET permissions=COALESCE((SELECT jsonb_agg(value) FROM jsonb_array_elements(permissions - 'room.occupy' - 'room.release_own' - 'room.manage_all')), '[]'::jsonb)`,

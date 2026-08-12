@@ -1,3 +1,5 @@
 allowBuilds:
-  sharp: set this to true or false
-  unrs-resolver: set this to true or false
+  sharp: true
+  unrs-resolver: true
+patchedDependencies:
+  web-push@3.6.7: patches/web-push@3.6.7.patch

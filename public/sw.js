@@ -1,4 +1,4 @@
-const CACHE = "mappa-v2";
+const CACHE = "mappa-v3";
 const SHELL = ["/", "/manifest.webmanifest", "/icon.svg"];
 self.addEventListener("install", (event) =>
   event.waitUntil(
@@ -63,9 +63,10 @@ self.addEventListener("notificationclick", (event) => {
       .matchAll({ type: "window", includeUncontrolled: true })
       .then((windows) => {
         const existing = windows.find((client) => "focus" in client);
+        const target = event.notification.data?.url || "/";
         return existing
-          ? existing.focus()
-          : clients.openWindow(event.notification.data?.url || "/");
+          ? existing.navigate(target).then((client) => client?.focus())
+          : clients.openWindow(target);
       }),
   );
 });

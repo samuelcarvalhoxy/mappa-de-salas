@@ -67,8 +67,14 @@ import {
   SECURITY_QUESTIONS,
   securityOptionsFor,
 } from "@/lib/security-options";
+import {
+  MAP_SHIFTS,
+  mapShiftBounds,
+  mapShiftForNow,
+} from "@/lib/map-shifts";
 import { useInstallPrompt, usePushNotifications } from "./pwa-hooks";
 import { Brand, Empty, Summary } from "./app-shell-parts";
+import { RoomMapSpreadsheet } from "./room-map-spreadsheet";
 import {
   addDays,
   BLUE_ORANGE_PALETTE,
@@ -1191,29 +1197,6 @@ function SecuritySelect({
   );
 }
 
-const MAP_SHIFTS = [
-  { id: "morning", name: "Manhã", startTime: "07:00", endTime: "14:20" },
-  {
-    id: "afternoon",
-    name: "Tarde",
-    startTime: "14:20",
-    endTime: "21:00",
-  },
-  { id: "extra", name: "Extra", startTime: "21:00", endTime: "07:00" },
-] as const;
-
-function mapShiftForNow(value: string) {
-  const localTime = new Intl.DateTimeFormat("pt-BR", {
-    timeZone: "America/Bahia",
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-  }).format(new Date(value));
-  if (localTime >= "07:00" && localTime < "14:20") return "morning";
-  if (localTime >= "14:20" && localTime < "21:00") return "afternoon";
-  return "extra";
-}
-
 function RoomMap({
   state,
   selectedDate,
@@ -1235,6 +1218,7 @@ function RoomMap({
 }) {
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState("all");
+  const [viewMode, setViewMode] = useState<"cards" | "spreadsheet">("cards");
   const [selectedShiftId, setSelectedShiftId] = useState(() =>
     mapShiftForNow(state.now),
   );
@@ -1248,20 +1232,19 @@ function RoomMap({
   const isToday = selectedDate === today;
   const selectedShift =
     MAP_SHIFTS.find((shift) => shift.id === selectedShiftId) || MAP_SHIFTS[0];
-  const shiftCrossesMidnight = selectedShift.endTime <= selectedShift.startTime;
-  const shiftEndDate = shiftCrossesMidnight
-    ? addDays(selectedDate, 1)
-    : selectedDate;
-  const shiftStart = new Date(
-    `${selectedDate}T${selectedShift.startTime}:00-03:00`,
-  );
-  const shiftEnd = new Date(
-    `${shiftEndDate}T${selectedShift.endTime}:00-03:00`,
-  );
+  const {
+    start: shiftStart,
+    end: shiftEnd,
+    endDate: shiftEndDate,
+  } = mapShiftBounds(selectedDate, selectedShift);
+  const spreadsheetEndDate = addDays(selectedDate, 4);
+  const spreadsheetExtraEndDate = addDays(spreadsheetEndDate, 1);
+  const loadToDate =
+    viewMode === "spreadsheet" ? spreadsheetExtraEndDate : shiftEndDate;
   const reference =
     isToday && now >= shiftStart && now < shiftEnd ? now : shiftStart;
   const referenceIsNow = reference.getTime() === now.getTime();
-  const loadKey = `${selectedDate}:${selectedShift.id}`;
+  const loadKey = `${viewMode}:${selectedDate}:${loadToDate}:${selectedShift.id}`;
   const dayReady = loadedKey === loadKey;
 
   useEffect(() => {
@@ -1272,7 +1255,7 @@ function RoomMap({
       setDayError("");
       try {
         const data = await api(
-          `/api/agenda?from=${selectedDate}&to=${shiftEndDate}`,
+          `/api/agenda?from=${selectedDate}&to=${loadToDate}`,
         );
         if (cancelled) return;
         setDayReservations(data.reservations || []);
@@ -1291,7 +1274,7 @@ function RoomMap({
     return () => {
       cancelled = true;
     };
-  }, [loadKey, selectedDate, shiftEndDate, state.now, reloadDay]);
+  }, [loadKey, selectedDate, loadToDate, state.now, reloadDay]);
 
   const reservations = dayReady ? dayReservations : [];
   const shiftReservationsFor = (roomId: string) =>
@@ -1317,8 +1300,23 @@ function RoomMap({
     shiftReservationsFor(roomId).find(
       (reservation) => new Date(reservation.startsAt) > reference,
     );
+  const spreadsheetStart = new Date(`${selectedDate}T08:00:00-03:00`);
+  const spreadsheetEnd = new Date(
+    `${spreadsheetExtraEndDate}T07:00:00-03:00`,
+  );
+  const spreadsheetReservationsFor = (roomId: string) =>
+    reservations.filter(
+      (reservation) =>
+        reservation.roomId === roomId &&
+        reservation.status === "reserved" &&
+        new Date(reservation.startsAt) < spreadsheetEnd &&
+        new Date(reservation.endsAt) > spreadsheetStart,
+    );
   const filtered = state.rooms.filter((room) => {
-    const roomShiftReservations = shiftReservationsFor(room.id);
+    const roomShiftReservations =
+      viewMode === "spreadsheet"
+        ? spreadsheetReservationsFor(room.id)
+        : shiftReservationsFor(room.id);
     const hasReservation = roomShiftReservations.length > 0;
     const matchesFilter =
       filter === "all" ||
@@ -1352,6 +1350,7 @@ function RoomMap({
   const changeDate = (nextDate: string) => {
     if (/^\d{4}-\d{2}-\d{2}$/.test(nextDate)) onSelectedDateChange(nextDate);
   };
+  const navigationStep = viewMode === "spreadsheet" ? 5 : 1;
   return (
     <>
       <div className="map-date-bar" aria-busy={dayLoading}>
@@ -1360,20 +1359,49 @@ function RoomMap({
             <CalendarDays size={20} />
           </span>
           <div>
-            <strong>{isToday ? "Hoje" : requestDateLabel(selectedDate)}</strong>
+            <strong>
+              {viewMode === "spreadsheet"
+                ? `${requestDateLabel(selectedDate)} a ${requestDateLabel(spreadsheetEndDate)}`
+                : isToday
+                  ? "Hoje"
+                  : requestDateLabel(selectedDate)}
+            </strong>
             <small>
-              Status referente ao turno {selectedShift.name.toLowerCase()}, das{" "}
-              {selectedShift.startTime} às {selectedShift.endTime}
+              {viewMode === "spreadsheet"
+                ? "Mapa de cinco dias com todos os turnos"
+                : `Status referente ao turno ${selectedShift.name.toLowerCase()}, das ${selectedShift.startTime} às ${selectedShift.endTime}`}
             </small>
           </div>
+        </div>
+        <div
+          className="mode-toggle map-view-toggle"
+          role="group"
+          aria-label="Formato de visualização do mapa"
+        >
+          <button
+            type="button"
+            className={viewMode === "cards" ? "active" : ""}
+            aria-pressed={viewMode === "cards"}
+            onClick={() => setViewMode("cards")}
+          >
+            <LayoutGrid size={16} /> Cartões
+          </button>
+          <button
+            type="button"
+            className={viewMode === "spreadsheet" ? "active" : ""}
+            aria-pressed={viewMode === "spreadsheet"}
+            onClick={() => setViewMode("spreadsheet")}
+          >
+            <Table2 size={16} /> Planilha
+          </button>
         </div>
         <div className="map-date-controls">
           <button
             className="icon-btn"
             type="button"
-            title="Dia anterior"
-            aria-label="Dia anterior"
-            onClick={() => changeDate(addDays(selectedDate, -1))}
+            title={viewMode === "spreadsheet" ? "Período anterior" : "Dia anterior"}
+            aria-label={viewMode === "spreadsheet" ? "Período anterior" : "Dia anterior"}
+            onClick={() => changeDate(addDays(selectedDate, -navigationStep))}
           >
             <ChevronLeft size={18} />
           </button>
@@ -1386,9 +1414,9 @@ function RoomMap({
           <button
             className="icon-btn"
             type="button"
-            title="Dia seguinte"
-            aria-label="Dia seguinte"
-            onClick={() => changeDate(addDays(selectedDate, 1))}
+            title={viewMode === "spreadsheet" ? "Próximo período" : "Dia seguinte"}
+            aria-label={viewMode === "spreadsheet" ? "Próximo período" : "Dia seguinte"}
+            onClick={() => changeDate(addDays(selectedDate, navigationStep))}
           >
             <ChevronRight size={18} />
           </button>
@@ -1401,14 +1429,16 @@ function RoomMap({
               Hoje
             </button>
           )}
-          <button
-            className="btn btn-soft map-shift-button"
-            type="button"
-            title="Clique para alternar entre manhã, tarde e turno extra"
-            onClick={cycleShift}
-          >
-            <Clock3 size={16} /> Turno: {selectedShift.name}
-          </button>
+          {viewMode === "cards" && (
+            <button
+              className="btn btn-soft map-shift-button"
+              type="button"
+              title="Clique para alternar entre manhã, tarde e turno extra"
+              onClick={cycleShift}
+            >
+              <Clock3 size={16} /> Turno: {selectedShift.name}
+            </button>
+          )}
         </div>
       </div>
       {!dayReady && (
@@ -1431,7 +1461,7 @@ function RoomMap({
       )}
       {dayReady && (
         <>
-      <div className="summary-grid">
+      {viewMode === "cards" && <div className="summary-grid">
         <Summary
           icon={DoorOpen}
           label="Livres durante todo o turno"
@@ -1464,7 +1494,7 @@ function RoomMap({
           value={`${selectedShift.startTime} às ${selectedShift.endTime}`}
           tone="violet"
         />
-      </div>
+      </div>}
       <div className="toolbar">
         <div className="search">
           <Search size={18} />
@@ -1496,6 +1526,19 @@ function RoomMap({
           icon={DoorOpen}
           title="Nenhuma sala cadastrada"
           text="Um administrador pode cadastrar a primeira sala na área Salas."
+        />
+      ) : filtered.length === 0 ? (
+        <Empty
+          icon={Search}
+          title="Nenhuma sala encontrada"
+          text="Altere a busca ou os filtros para visualizar outras salas."
+        />
+      ) : viewMode === "spreadsheet" ? (
+        <RoomMapSpreadsheet
+          startDate={selectedDate}
+          rooms={filtered}
+          reservations={reservations}
+          onInspect={onInspect}
         />
       ) : (
         <div className="room-grid">

@@ -1,0 +1,31 @@
+name: Lembretes de solicitações
+
+on:
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mappa-request-reminders
+  cancel-in-progress: true
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Acionar lembretes e retenção
+        env:
+          AUTOMATION_URL: ${{ vars.MAPPA_AUTOMATION_URL }}
+          AUTOMATION_SECRET: ${{ secrets.REMINDER_CRON_SECRET }}
+        run: |
+          test -n "$AUTOMATION_URL"
+          test -n "$AUTOMATION_SECRET"
+          curl --fail --silent --show-error \
+            --retry 2 \
+            --max-time 50 \
+            --header "Authorization: Bearer $AUTOMATION_SECRET" \
+            "$AUTOMATION_URL/api/automation"

@@ -1,6 +1,7 @@
 import { neon, NeonQueryFunction } from "@neondatabase/serverless";
 import bcrypt from "bcryptjs";
 import type { Permission } from "./types";
+import { SECURITY_FIELDS } from "./security-options";
 
 let client: NeonQueryFunction<false, false> | null = null;
 let ready: Promise<void> | null = null;
@@ -276,6 +277,112 @@ async function initialize() {
         (process.env.GOD_USERNAME || "samuel").toLowerCase(),
         hash,
         godRole[0].id,
+      ],
+    );
+  }
+
+  if (process.env.VERCEL_ENV === "preview") {
+    await ensurePreviewTestData(db);
+  }
+}
+
+async function ensurePreviewTestData(db: NeonQueryFunction<false, false>) {
+  const password = process.env.PREVIEW_TEST_PASSWORD;
+  if (!password) return;
+
+  const username = (process.env.PREVIEW_TEST_USERNAME || "mappa.teste")
+    .trim()
+    .toLowerCase();
+  const name = process.env.PREVIEW_TEST_NAME || "Acesso de Teste";
+  const godRole = await db.query(`SELECT id FROM roles WHERE name='God' LIMIT 1`);
+  const existingUsers = await db.query(
+    `SELECT id,password_hash,security_answers FROM users WHERE username=$1 LIMIT 1`,
+    [username],
+  );
+  const existingUser = existingUsers[0];
+  const passwordMatches = existingUser
+    ? await bcrypt.compare(password, existingUser.password_hash)
+    : false;
+  const passwordHash = passwordMatches
+    ? existingUser.password_hash
+    : await bcrypt.hash(password, 12);
+
+  let testUserId: string;
+  if (existingUser) {
+    await db.query(
+      `UPDATE users SET name=$1,password_hash=$2,role_id=$3,is_god=true,active=true,deleted_at=NULL,failed_logins=0,locked_until=NULL,updated_at=now() WHERE id=$4`,
+      [name, passwordHash, godRole[0].id, existingUser.id],
+    );
+    testUserId = existingUser.id;
+  } else {
+    const inserted = await db.query(
+      `INSERT INTO users(name,username,password_hash,role_id,is_god,is_owner_god) VALUES ($1,$2,$3,$4,true,false) RETURNING id`,
+      [name, username, passwordHash, godRole[0].id],
+    );
+    testUserId = inserted[0].id;
+  }
+
+  const savedAnswers = Array.isArray(existingUser?.security_answers)
+    ? existingUser.security_answers
+    : [];
+  if (savedAnswers.length < 2) {
+    const securityAnswers = await Promise.all(
+      SECURITY_FIELDS.map(async (field) => ({
+        question: field.question,
+        hash: await bcrypt.hash(
+          field.options[0].toLocaleLowerCase("pt-BR"),
+          12,
+        ),
+      })),
+    );
+    await db.query(
+      `UPDATE users SET security_answers=$1::jsonb,updated_at=now() WHERE id=$2`,
+      [JSON.stringify(securityAnswers), testUserId],
+    );
+  }
+
+  const roomCount = await db.query(
+    `SELECT count(*)::int count FROM rooms WHERE active=true`,
+  );
+  if (Number(roomCount[0]?.count) > 0) return;
+
+  const rooms = await db.query(
+    `INSERT INTO rooms(name,location,kind,capacity,resources,network_status,chairs,tables,workstations) VALUES
+      ('Sala de Treinamento 01','Anexo SAC, térreo','physical',24,'Projetor, quadro e videoconferência','Disponível',24,12,18),
+      ('Sala de Treinamento 02','Anexo SAC, térreo','physical',18,'TV, quadro e webcam','Disponível',18,9,12),
+      ('Sala Híbrida','Edifício principal, 1º andar','physical',12,'Videoconferência, TV e quadro','Disponível',12,6,8),
+      ('Laboratório de Informática','Edifício principal, 2º andar','physical',20,'Projetor e computadores','Disponível',20,10,20),
+      ('Sala Virtual Teams','Online','virtual',100,'Microsoft Teams','Não se aplica',0,0,0)
+     RETURNING id,name`,
+  );
+
+  const samples = [
+    [0, 0, "08:00", "10:00", "Treinamento de integração"],
+    [1, 0, "10:00", "12:00", "Reunião de projeto"],
+    [2, 0, "14:20", "17:00", "Oficina de produto"],
+    [0, 1, "08:00", "14:20", "Capacitação da equipe"],
+    [3, 1, "14:20", "18:00", "Laboratório prático"],
+    [4, 2, "09:00", "11:00", "Encontro remoto"],
+    [2, 3, "21:00", "23:30", "Manutenção programada"],
+    [1, 4, "14:20", "21:00", "Planejamento semanal"],
+  ] as const;
+
+  for (const [roomIndex, dayOffset, startTime, endTime, reason] of samples) {
+    await db.query(
+      `INSERT INTO reservations(room_id,user_id,reason,starts_at,ends_at,shareable,expected_people,status,created_by)
+       VALUES (
+         $1,$2,$3,
+         (((now() AT TIME ZONE 'America/Bahia')::date + $4::int)::text || ' ' || $5)::timestamp AT TIME ZONE 'America/Bahia',
+         (((now() AT TIME ZONE 'America/Bahia')::date + $4::int)::text || ' ' || $6)::timestamp AT TIME ZONE 'America/Bahia',
+         false,1,'reserved',$2
+       )`,
+      [
+        rooms[roomIndex].id,
+        testUserId,
+        reason,
+        dayOffset,
+        startTime,
+        endTime,
       ],
     );
   }

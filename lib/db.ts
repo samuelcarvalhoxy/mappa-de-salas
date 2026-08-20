@@ -55,6 +55,21 @@ async function initialize() {
   await db.query(
     `ALTER TABLE users ADD COLUMN IF NOT EXISTS is_owner_god boolean NOT NULL DEFAULT false`,
   );
+  await db.query(
+    `ALTER TABLE users ADD COLUMN IF NOT EXISTS last_login_at timestamptz`,
+  );
+  await db.query(
+    `ALTER TABLE users ADD COLUMN IF NOT EXISTS last_seen_at timestamptz`,
+  );
+  await db.query(
+    `ALTER TABLE users ADD COLUMN IF NOT EXISTS login_count int NOT NULL DEFAULT 0`,
+  );
+  await db.query(
+    `ALTER TABLE users ADD COLUMN IF NOT EXISTS request_reminders_enabled boolean NOT NULL DEFAULT true`,
+  );
+  await db.query(
+    `ALTER TABLE users ADD COLUMN IF NOT EXISTS last_request_reminder_at timestamptz`,
+  );
   await db.query(`CREATE TABLE IF NOT EXISTS rooms (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(), name text NOT NULL, location text NOT NULL DEFAULT '',
     kind text NOT NULL DEFAULT 'physical', capacity int NOT NULL DEFAULT 1, resources text NOT NULL DEFAULT '',
@@ -102,6 +117,15 @@ async function initialize() {
   await db.query(
     `CREATE INDEX IF NOT EXISTS booking_requests_requester_idx ON booking_requests(requester_id,created_at DESC)`,
   );
+  await db.query(
+    `ALTER TABLE booking_requests ADD COLUMN IF NOT EXISTS urgent boolean NOT NULL DEFAULT false`,
+  );
+  await db.query(
+    `ALTER TABLE booking_requests ADD COLUMN IF NOT EXISTS urgent_acknowledged_at timestamptz`,
+  );
+  await db.query(
+    `ALTER TABLE booking_requests ADD COLUMN IF NOT EXISTS urgent_acknowledged_by uuid REFERENCES users(id)`,
+  );
   await db.query(`CREATE TABLE IF NOT EXISTS shifts (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(), name text UNIQUE NOT NULL, start_time text NOT NULL, end_time text NOT NULL
   )`);
@@ -141,6 +165,9 @@ async function initialize() {
     CHECK (type IN ('bug','suggestion')), CHECK (status IN ('open','in_review','resolved'))
   )`);
   await db.query(
+    `ALTER TABLE feedback_reports ADD COLUMN IF NOT EXISTS category text NOT NULL DEFAULT 'Geral'`,
+  );
+  await db.query(
     `CREATE INDEX IF NOT EXISTS feedback_reports_status_created_idx ON feedback_reports(status,created_at DESC)`,
   );
   await db.query(`CREATE TABLE IF NOT EXISTS feedback_rate_limits (
@@ -155,6 +182,18 @@ async function initialize() {
   await db.query(
     `CREATE INDEX IF NOT EXISTS notifications_user_created_idx ON notifications(user_id,created_at DESC)`,
   );
+  await db.query(`CREATE TABLE IF NOT EXISTS notification_templates (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(), name text NOT NULL, title text NOT NULL, body text NOT NULL,
+    created_by uuid REFERENCES users(id), created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now()
+  )`);
+  await db.query(`CREATE TABLE IF NOT EXISTS notification_broadcasts (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(), sender_id uuid REFERENCES users(id), title text NOT NULL, body text NOT NULL,
+    audience_label text NOT NULL, recipients jsonb NOT NULL DEFAULT '[]'::jsonb, created_at timestamptz NOT NULL DEFAULT now()
+  )`);
+  await db.query(`CREATE TABLE IF NOT EXISTS retention_rollups (
+    month date NOT NULL, actor_key text NOT NULL, action text NOT NULL, event_count int NOT NULL DEFAULT 0,
+    PRIMARY KEY(month,actor_key,action)
+  )`);
 
   const roles = [
     {
@@ -167,8 +206,11 @@ async function initialize() {
         "booking.manage_all",
         "booking.request",
         "booking.review",
+        "booking.checkout_own",
+        "booking.checkout_all",
         "room.manage",
         "issue.resolve",
+        "notification.send",
         "user.manage",
         "user.delete",
         "security.reset",
@@ -185,6 +227,8 @@ async function initialize() {
         "booking.create_own",
         "booking.create_all",
         "booking.manage_all",
+        "booking.checkout_own",
+        "booking.checkout_all",
         "room.manage",
         "user.manage",
         "audit.view",
@@ -198,6 +242,8 @@ async function initialize() {
         "booking.create_own",
         "booking.create_all",
         "booking.manage_all",
+        "booking.checkout_own",
+        "booking.checkout_all",
         "room.manage",
         "user.manage",
       ],
@@ -206,7 +252,7 @@ async function initialize() {
       name: "Usuário",
       color: "#34785a",
       system: true,
-      permissions: ["booking.request"],
+      permissions: ["booking.request", "booking.checkout_own"],
     },
   ];
   for (const role of roles) {
@@ -216,13 +262,16 @@ async function initialize() {
     );
   }
   await db.query(
-    `UPDATE roles SET permissions=(SELECT jsonb_agg(DISTINCT value) FROM jsonb_array_elements(permissions || '["security.reset","user.delete","stats.view","booking.request","booking.review","issue.resolve"]'::jsonb)) WHERE name='God'`,
+    `UPDATE roles SET permissions=(SELECT jsonb_agg(DISTINCT value) FROM jsonb_array_elements(permissions || '["security.reset","user.delete","stats.view","booking.request","booking.review","issue.resolve","booking.checkout_own","booking.checkout_all","notification.send"]'::jsonb)) WHERE name='God'`,
   );
   await db.query(
     `UPDATE roles SET permissions=COALESCE((SELECT jsonb_agg(value) FROM jsonb_array_elements(permissions - 'room.occupy' - 'room.release_own' - 'room.manage_all')), '[]'::jsonb)`,
   );
   await db.query(
-    `UPDATE roles SET permissions=(SELECT jsonb_agg(DISTINCT value) FROM jsonb_array_elements((permissions - 'booking.create_own') || '["booking.request"]'::jsonb)) WHERE name='Usuário'`,
+    `UPDATE roles SET permissions=(SELECT jsonb_agg(DISTINCT value) FROM jsonb_array_elements((permissions - 'booking.create_own') || '["booking.request","booking.checkout_own"]'::jsonb)) WHERE name='Usuário'`,
+  );
+  await db.query(
+    `UPDATE roles SET permissions=(SELECT jsonb_agg(DISTINCT value) FROM jsonb_array_elements(permissions || '["booking.checkout_own","booking.checkout_all"]'::jsonb)) WHERE name IN ('Gestão','ADM')`,
   );
   await db.query(
     `UPDATE reservations SET status='reserved',updated_at=now() WHERE status IN ('active','completed','no_show')`,
@@ -244,6 +293,12 @@ async function initialize() {
   );
   await db.query(
     `INSERT INTO shifts(name,start_time,end_time) VALUES ('Manhã','08:00','14:20'),('Tarde','14:40','21:00'),('Diurno','08:00','17:00'),('Dia todo','08:00','21:00') ON CONFLICT(name) DO NOTHING`,
+  );
+  await db.query(
+    `UPDATE shifts SET start_time='08:00',end_time='14:20' WHERE name='Manhã'`,
+  );
+  await db.query(
+    `UPDATE shifts SET start_time='14:20',end_time='21:00' WHERE name='Tarde'`,
   );
   await db.query(
     `INSERT INTO development_team(name,role,display_order) VALUES

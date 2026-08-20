@@ -23,6 +23,8 @@ export async function GET() {
     developmentTeam: [],
     feedbackReports: [],
     notifications: [],
+    notificationTemplates: [],
+    notificationBroadcasts: [],
     shifts: [],
     audit: [],
     pushPublicKey: process.env.VAPID_PUBLIC_KEY || "",
@@ -51,9 +53,15 @@ export async function GET() {
     return NextResponse.json({ error: "Sessão inválida" }, { status: 401 });
   const permissions = permissionsOf(user);
   const db = sql();
+  await db.query(
+    `UPDATE users SET last_seen_at=now() WHERE id=$1 AND (last_seen_at IS NULL OR last_seen_at<now()-interval '5 minutes')`,
+    [user.id],
+  );
   const canReviewRequests =
     user.is_god || permissions.includes("booking.review");
   const canRequest = user.is_god || permissions.includes("booking.request");
+  const canSendNotifications =
+    user.is_god || permissions.includes("notification.send");
   const [
     rooms,
     reservations,
@@ -66,6 +74,8 @@ export async function GET() {
     developmentTeam,
     feedbackReports,
     notifications,
+    notificationTemplates,
+    notificationBroadcasts,
   ] = await Promise.all([
       db.query(
         `SELECT id,name,location,kind,capacity,resources,network_status,chairs,tables,workstations,active FROM rooms WHERE active=true ORDER BY location,name`,
@@ -80,6 +90,7 @@ export async function GET() {
         ? db.query(
             `SELECT br.id,br.requester_id,u.name requester_name,br.room_id,r.name room_name,br.reason,
       br.requested_date::text,br.start_time,br.end_time,br.shareable,br.expected_people,br.status,br.review_comment,
+      br.urgent,br.urgent_acknowledged_at,
       rv.name reviewer_name,br.reviewed_at,br.created_at,br.updated_at
       FROM booking_requests br JOIN users u ON u.id=br.requester_id LEFT JOIN rooms r ON r.id=br.room_id
       LEFT JOIN users rv ON rv.id=br.reviewed_by
@@ -91,7 +102,10 @@ export async function GET() {
       db.query(
         `SELECT id,name,start_time,end_time FROM shifts ORDER BY start_time`,
       ),
-      permissions.includes("role.manage") || permissions.includes("user.manage")
+      permissions.includes("role.manage") ||
+      permissions.includes("user.manage") ||
+      permissions.includes("notification.send") ||
+      permissions.includes("audit.view")
         ? db.query(
             `SELECT id,name,color,permissions,system FROM roles ORDER BY system DESC,name`,
           )
@@ -100,11 +114,14 @@ export async function GET() {
       permissions.includes("user.delete") ||
       permissions.includes("security.reset") ||
       permissions.includes("stats.view") ||
+      permissions.includes("audit.view") ||
+      permissions.includes("notification.send") ||
       permissions.includes("booking.create_all") ||
       permissions.includes("booking.manage_all") ||
       user.is_god
         ? db.query(`SELECT u.id,u.name,u.username,u.role_id,r.name role_name,u.active,u.is_god,u.is_owner_god,
-      jsonb_array_length(u.security_answers) security_answer_count FROM users u JOIN roles r ON r.id=u.role_id WHERE u.deleted_at IS NULL ORDER BY u.name`)
+      jsonb_array_length(u.security_answers) security_answer_count,u.last_login_at,u.last_seen_at,u.login_count,u.request_reminders_enabled
+      FROM users u JOIN roles r ON r.id=u.role_id WHERE u.deleted_at IS NULL ORDER BY u.name`)
         : Promise.resolve([]),
       permissions.includes("audit.view")
         ? db.query(
@@ -116,7 +133,7 @@ export async function GET() {
       ),
       user.is_god
         ? db.query(
-            `SELECT id,type,title,description,reporter_name,reporter_email,status,created_at
+            `SELECT id,type,category,title,description,reporter_name,reporter_email,status,created_at
              FROM feedback_reports ORDER BY CASE status WHEN 'open' THEN 0 WHEN 'in_review' THEN 1 ELSE 2 END,created_at DESC LIMIT 100`,
           )
         : Promise.resolve([]),
@@ -124,6 +141,17 @@ export async function GET() {
         `SELECT id,title,body,url,read_at,created_at FROM notifications WHERE user_id=$1 ORDER BY created_at DESC LIMIT 50`,
         [user.id],
       ),
+      canSendNotifications
+        ? db.query(
+            `SELECT id,name,title,body,created_at FROM notification_templates ORDER BY name`,
+          )
+        : Promise.resolve([]),
+      canSendNotifications
+        ? db.query(
+            `SELECT nb.id,coalesce(u.name,'Sistema') sender_name,nb.title,nb.body,nb.audience_label,nb.recipients,nb.created_at
+             FROM notification_broadcasts nb LEFT JOIN users u ON u.id=nb.sender_id ORDER BY nb.created_at DESC LIMIT 100`,
+          )
+        : Promise.resolve([]),
     ]);
   return NextResponse.json({
     configured: true,
@@ -199,6 +227,8 @@ export async function GET() {
       reviewedAt: item.reviewed_at,
       createdAt: item.created_at,
       updatedAt: item.updated_at,
+      urgent: Boolean(item.urgent),
+      urgentAcknowledgedAt: item.urgent_acknowledged_at,
     })),
     shifts: shifts.map((s) => ({
       id: s.id,
@@ -217,6 +247,10 @@ export async function GET() {
       isGod: u.is_god,
       isOwnerGod: u.is_owner_god,
       hasSecurityAnswers: Number(u.security_answer_count) >= 2,
+      lastLoginAt: u.last_login_at,
+      lastSeenAt: u.last_seen_at,
+      loginCount: Number(u.login_count) || 0,
+      requestRemindersEnabled: Boolean(u.request_reminders_enabled),
     })),
     developmentTeam: developmentTeam.map((member) => ({
       id: member.id,
@@ -230,6 +264,7 @@ export async function GET() {
     feedbackReports: feedbackReports.map((report) => ({
       id: report.id,
       type: report.type,
+      category: report.category,
       title: report.title,
       description: report.description,
       reporterName: report.reporter_name,
@@ -244,6 +279,24 @@ export async function GET() {
       url: notification.url,
       readAt: notification.read_at,
       createdAt: notification.created_at,
+    })),
+    notificationTemplates: notificationTemplates.map((template) => ({
+      id: template.id,
+      name: template.name,
+      title: template.title,
+      body: template.body,
+      createdAt: template.created_at,
+    })),
+    notificationBroadcasts: notificationBroadcasts.map((broadcast) => ({
+      id: broadcast.id,
+      senderName: broadcast.sender_name,
+      title: broadcast.title,
+      body: broadcast.body,
+      audienceLabel: broadcast.audience_label,
+      recipients: Array.isArray(broadcast.recipients)
+        ? broadcast.recipients.map(String)
+        : [],
+      createdAt: broadcast.created_at,
     })),
     audit: audit.map((item) => ({
       id: item.id,

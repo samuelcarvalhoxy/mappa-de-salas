@@ -1078,7 +1078,7 @@ main {
   z-index: 3;
 }
 .spreadsheet-date-row th {
-  padding: 11px 8px;
+  padding: 7px 6px;
   color: var(--on-brand);
   background: var(--brand);
   font-family: "Manrope", sans-serif;
@@ -1090,7 +1090,7 @@ main {
   font-size: 13px;
 }
 .spreadsheet-weekday-row th {
-  padding: 6px 8px;
+  padding: 3px 6px;
   color: var(--on-brand);
   background: color-mix(in srgb, var(--brand-strong) 88%, black);
   font-size: 9px;
@@ -1107,8 +1107,8 @@ main {
 }
 .room-spreadsheet-table tbody th button {
   width: 100%;
-  min-height: 72px;
-  padding: 10px 12px;
+  min-height: 30px;
+  padding: 3px 7px;
   border: 0;
   color: var(--text);
   background: transparent;
@@ -1124,13 +1124,14 @@ main {
 }
 .room-spreadsheet-table tbody th strong {
   overflow: hidden;
-  font-size: 11px;
-  line-height: 1.35;
+  font-size: 9px;
+  line-height: 1.15;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .room-spreadsheet-table tbody th small {
-  margin-top: 4px;
+  display: none;
+  margin-top: 1px;
   overflow: hidden;
   color: var(--muted);
   font-size: 9px;
@@ -1140,7 +1141,7 @@ main {
 .room-spreadsheet-table td > button {
   display: flex;
   width: 100%;
-  min-height: 72px;
+  min-height: 30px;
   padding: 0;
   border: 0;
   color: inherit;
@@ -1164,23 +1165,23 @@ main {
   letter-spacing: 0.5px;
 }
 .spreadsheet-cell-booked {
-  padding: 3px;
+  padding: 1px;
   background: var(--surface-2);
 }
 .spreadsheet-cell-booked > button {
   flex-direction: column;
-  gap: 3px;
+  gap: 1px;
 }
 .spreadsheet-reservation {
   display: flex;
   width: 100%;
-  min-height: 66px;
-  padding: 7px 8px;
+  min-height: 28px;
+  padding: 2px 4px;
   align-items: center;
   justify-content: center;
   flex-direction: column;
   color: #1e1830;
-  line-height: 1.25;
+  line-height: 1.05;
   text-align: center;
 }
 .spreadsheet-reservation strong,
@@ -1193,16 +1194,16 @@ main {
   white-space: nowrap;
 }
 .spreadsheet-reservation strong {
-  font-size: 9px;
+  font-size: 8px;
   text-transform: uppercase;
 }
 .spreadsheet-reservation span {
-  margin-top: 2px;
-  font-size: 9px;
+  margin-top: 1px;
+  font-size: 8px;
 }
 .spreadsheet-reservation small {
-  margin-top: 4px;
-  font-size: 8px;
+  margin-top: 1px;
+  font-size: 7px;
   font-weight: 700;
 }
 .spreadsheet-tone-0 {
@@ -2728,13 +2729,53 @@ main {
 }
 .request-filters label,
 .audit-filters label,
-.feedback-filters label {
+.feedback-filters label,
+.report-filters label {
   display: grid;
   gap: 5px;
   color: var(--muted);
   font-size: 9px;
   font-weight: 800;
   text-transform: uppercase;
+}
+.request-filters input,
+.request-filters select,
+.audit-filters input,
+.audit-filters select,
+.feedback-filters input,
+.feedback-filters select,
+.report-filters input,
+.report-filters select,
+.notification-compose input,
+.notification-compose select,
+.notification-compose textarea,
+.template-save-row input {
+  width: 100%;
+  min-width: 0;
+  min-height: 39px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  padding: 8px 10px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 500;
+  text-transform: none;
+}
+.notification-compose textarea {
+  min-height: 88px;
+  resize: vertical;
+}
+.report-filters .search {
+  min-width: 0;
+  max-width: none;
+}
+.report-filters .search input {
+  height: 39px;
+  padding-left: 38px;
+}
+.report-filters .search svg {
+  left: 12px;
 }
 .request-card.urgent {
   margin: 8px 0;
@@ -2797,6 +2838,16 @@ main {
 }
 .notification-compose .wide-field {
   grid-column: 1 / -1;
+}
+.permission-locked {
+  opacity: 0.68;
+}
+.permission-locked small {
+  display: block;
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 500;
 }
 .panel-actions-row {
   display: flex;

@@ -7,6 +7,7 @@ import {
   SECURITY_QUESTIONS,
 } from "@/lib/security-options";
 import { PERMISSIONS, type Permission } from "@/lib/types";
+import { canManagePermissionChanges } from "@/lib/permission-policy";
 import {
   isValidDate,
   isValidTimeRange,
@@ -17,9 +18,19 @@ import {
   notifyUsers,
 } from "@/lib/push";
 import { handleFacilityAction } from "@/lib/action-handlers/facilities";
+import { handleNotificationAction } from "@/lib/action-handlers/notifications";
 
 function fail(error: string, status = 400) {
   return NextResponse.json({ error }, { status });
+}
+
+function validPermissions(value: unknown): Permission[] {
+  return Array.isArray(value)
+    ? value.filter(
+        (permission: unknown): permission is Permission =>
+          PERMISSIONS.includes(permission as Permission),
+      )
+    : [];
 }
 
 function replacementConfirmationRequired(conflictCount: number) {
@@ -97,6 +108,15 @@ export async function POST(request: NextRequest) {
       audit,
     });
     if (facilityResponse) return facilityResponse;
+    const notificationResponse = await handleNotificationAction({
+      action,
+      body,
+      db,
+      actor,
+      requirePermission,
+      audit,
+    });
+    if (notificationResponse) return notificationResponse;
 
     if (action === "request.create") {
       if (!requirePermission("booking.request"))
@@ -111,9 +131,10 @@ export async function POST(request: NextRequest) {
         );
         if (!room.length) return fail("Sala não encontrada ou inativa.", 404);
       }
-      await db.query(
-        `INSERT INTO booking_requests(requester_id,room_id,reason,requested_date,start_time,end_time,shareable,expected_people)
-        VALUES ($1,$2,$3,$4::date,$5,$6,$7,$8)`,
+      const urgent = body.urgent === true;
+      const createdRequest = await db.query(
+        `INSERT INTO booking_requests(requester_id,room_id,reason,requested_date,start_time,end_time,shareable,expected_people,urgent)
+        VALUES ($1,$2,$3,$4::date,$5,$6,$7,$8,$9) RETURNING id`,
         [
           actor.id,
           fields.roomId,
@@ -123,14 +144,15 @@ export async function POST(request: NextRequest) {
           fields.endTime,
           fields.shareable,
           fields.expectedPeople,
+          urgent,
         ],
       );
       await audit(`Solicitação de sala criada para ${fields.requestedDate}`);
       await notifyPermission("booking.review", {
-        title: "Nova solicitação de sala",
-        body: `${actor.name} solicitou ${fields.roomId ? "uma sala específica" : "qualquer sala disponível"} para ${fields.requestedDate}.`,
-        url: "/",
-        tag: "booking-request",
+        title: urgent ? "Solicitação urgente de sala" : "Nova solicitação de sala",
+        body: `${urgent ? "URGENTE: " : ""}${actor.name} solicitou ${fields.roomId ? "uma sala específica" : "qualquer sala disponível"} para ${fields.requestedDate}.`,
+        url: `/?tab=requests&request=${createdRequest[0].id}`,
+        tag: urgent ? `urgent-request-${createdRequest[0].id}` : "booking-request",
       });
       if (!fields.roomId) {
         const available = await db.query(
@@ -166,7 +188,10 @@ export async function POST(request: NextRequest) {
       }
       const updated = await db.query(
         `UPDATE booking_requests SET room_id=$1,reason=$2,requested_date=$3::date,start_time=$4,end_time=$5,
-        shareable=$6,expected_people=$7,updated_at=now() WHERE id=$8 AND status='pending' RETURNING requester_id`,
+        shareable=$6,expected_people=$7,
+        urgent_acknowledged_at=CASE WHEN $8::boolean<>urgent THEN NULL ELSE urgent_acknowledged_at END,
+        urgent_acknowledged_by=CASE WHEN $8::boolean<>urgent THEN NULL ELSE urgent_acknowledged_by END,
+        urgent=$8,updated_at=now() WHERE id=$9 AND status='pending' RETURNING requester_id`,
         [
           fields.roomId,
           fields.reason,
@@ -175,6 +200,7 @@ export async function POST(request: NextRequest) {
           fields.endTime,
           fields.shareable,
           fields.expectedPeople,
+          body.urgent === true,
           requestId,
         ],
       );
@@ -211,7 +237,8 @@ export async function POST(request: NextRequest) {
       if (decision === "rejected") {
         const rejected = await db.query(
           `UPDATE booking_requests SET room_id=$1,reason=$2,requested_date=$3::date,start_time=$4,end_time=$5,
-          shareable=$6,expected_people=$7,status='rejected',review_comment=$8,reviewed_by=$9,reviewed_at=now(),updated_at=now()
+          shareable=$6,expected_people=$7,status='rejected',review_comment=$8,reviewed_by=$9,reviewed_at=now(),updated_at=now(),
+          urgent_acknowledged_at=COALESCE(urgent_acknowledged_at,now()),urgent_acknowledged_by=COALESCE(urgent_acknowledged_by,$9)
           WHERE id=$10 AND status='pending' RETURNING id`,
           [
             fields.roomId,
@@ -252,7 +279,8 @@ export async function POST(request: NextRequest) {
             WHERE room_id=$1 AND status='reserved' AND starts_at<$12::timestamptz AND ends_at>$11::timestamptz
           ), approved_request AS (
             UPDATE booking_requests SET room_id=$1,reason=$2,requested_date=$3::date,start_time=$4,end_time=$5,shareable=$6,
-              expected_people=$7,status='approved',review_comment=$8,reviewed_by=$9,reviewed_at=now(),updated_at=now()
+              expected_people=$7,status='approved',review_comment=$8,reviewed_by=$9,reviewed_at=now(),updated_at=now(),
+              urgent_acknowledged_at=COALESCE(urgent_acknowledged_at,now()),urgent_acknowledged_by=COALESCE(urgent_acknowledged_by,$9)
             WHERE id=$10 AND status='pending' AND ($13::boolean OR NOT EXISTS (SELECT 1 FROM conflicts)) RETURNING requester_id
           ), displaced AS (
             UPDATE reservations SET status='cancelled',updated_at=now()
@@ -310,10 +338,23 @@ export async function POST(request: NextRequest) {
           tag: `reservation-replaced-${requestId}`,
         });
       }
+    } else if (action === "request.acknowledge_urgent") {
+      if (!requirePermission("booking.review"))
+        return fail("Sem permissão para analisar solicitações.", 403);
+      const acknowledged = await db.query(
+        `UPDATE booking_requests SET urgent_acknowledged_at=COALESCE(urgent_acknowledged_at,now()),
+         urgent_acknowledged_by=COALESCE(urgent_acknowledged_by,$1),updated_at=now()
+         WHERE id=$2 AND status='pending' AND urgent=true RETURNING id`,
+        [actor.id, String(body.id || "")],
+      );
+      if (!acknowledged.length)
+        return fail("Solicitação urgente não encontrada ou já concluída.", 404);
+      await audit("Alerta de solicitação urgente reconhecido");
     } else if (action === "request.cancel") {
       const requestId = String(body.id || "");
       const cancelled = await db.query(
-        `UPDATE booking_requests SET status='cancelled',updated_at=now()
+        `UPDATE booking_requests SET status='cancelled',updated_at=now(),
+        urgent_acknowledged_at=COALESCE(urgent_acknowledged_at,now()),urgent_acknowledged_by=COALESCE(urgent_acknowledged_by,$2)
         WHERE id=$1 AND status='pending' AND (requester_id=$2 OR $3::boolean) RETURNING requester_id`,
         [requestId, actor.id, requirePermission("booking.review")],
       );
@@ -666,6 +707,44 @@ export async function POST(request: NextRequest) {
           url: "/",
           tag: `reservation-series-transferred-${seriesId}`,
         });
+    } else if (action === "booking.checkout") {
+      const id = String(body.id || "");
+      const rows = await db.query(
+        `SELECT rs.user_id,rs.room_id,r.name room_name,rs.starts_at,rs.ends_at
+         FROM reservations rs JOIN rooms r ON r.id=rs.room_id
+         WHERE rs.id=$1 AND rs.status='reserved' AND rs.starts_at<=now() AND rs.ends_at>now() LIMIT 1`,
+        [id],
+      );
+      if (!rows.length)
+        return fail("A reserva não está em andamento ou já foi finalizada.", 409);
+      const ownReservation = String(rows[0].user_id) === String(actor.id);
+      const canCheckout = ownReservation
+        ? requirePermission("booking.checkout_own") ||
+          requirePermission("booking.checkout_all")
+        : requirePermission("booking.checkout_all");
+      if (!canCheckout)
+        return fail("Seu perfil não pode finalizar esta utilização.", 403);
+      const checkedOut = await db.query(
+        `UPDATE reservations SET ends_at=now(),updated_at=now()
+         WHERE id=$1 AND status='reserved' AND starts_at<=now() AND ends_at>now()
+         RETURNING starts_at::date::text reservation_date`,
+        [id],
+      );
+      if (!checkedOut.length)
+        return fail("A reserva já foi finalizada por outra pessoa.", 409);
+      await audit(`Utilização de ${rows[0].room_name} finalizada antes do horário`);
+      await notifyUsers([String(rows[0].user_id)], {
+        title: "Utilização finalizada",
+        body: `A utilização de ${rows[0].room_name} foi encerrada antecipadamente e a sala já está disponível.`,
+        url: "/",
+        tag: `reservation-checkout-${id}`,
+      });
+      await notifyAnyRoomRequesters(String(checkedOut[0].reservation_date), {
+        title: "Sala liberada antes do horário",
+        body: `${rows[0].room_name} ficou disponível após uma finalização antecipada.`,
+        url: "/",
+        tag: `room-checkout-${id}`,
+      });
     } else if (action === "booking.cancel") {
       const id = String(body.id || "");
       const rows = await db.query(
@@ -735,10 +814,20 @@ export async function POST(request: NextRequest) {
         [actor.id],
       );
     } else if (action === "notification.read") {
-      await db.query(
-        `UPDATE notifications SET read_at=COALESCE(read_at,now()) WHERE id=$1 AND user_id=$2`,
+      const marked = await db.query(
+        `UPDATE notifications SET read_at=COALESCE(read_at,now()) WHERE id=$1 AND user_id=$2 RETURNING url`,
         [String(body.id || ""), actor.id],
       );
+      const requestId = String(marked[0]?.url || "").match(
+        /[?&]request=([0-9a-f-]{36})/i,
+      )?.[1];
+      if (requestId && requirePermission("booking.review"))
+        await db.query(
+          `UPDATE booking_requests SET urgent_acknowledged_at=COALESCE(urgent_acknowledged_at,now()),
+           urgent_acknowledged_by=COALESCE(urgent_acknowledged_by,$1)
+           WHERE id=$2 AND status='pending' AND urgent=true`,
+          [actor.id, requestId],
+        );
     } else if (action === "user.password.change") {
       const currentPassword = String(body.currentPassword || "");
       const newPassword = String(body.newPassword || "");
@@ -767,7 +856,9 @@ export async function POST(request: NextRequest) {
         return fail("Preencha nome, usuário e perfil.");
       const existing = id
         ? await db.query(
-            `SELECT id,username,role_id,is_god,is_owner_god FROM users WHERE id=$1 AND deleted_at IS NULL`,
+            `SELECT u.id,u.username,u.role_id,u.is_god,u.is_owner_god,r.permissions role_permissions
+             FROM users u JOIN roles r ON r.id=u.role_id
+             WHERE u.id=$1 AND u.deleted_at IS NULL`,
             [id],
           )
         : [];
@@ -783,7 +874,7 @@ export async function POST(request: NextRequest) {
           403,
         );
       const requestedRole = await db.query(
-        `SELECT id,name FROM roles WHERE id=$1 LIMIT 1`,
+        `SELECT id,name,permissions FROM roles WHERE id=$1 LIMIT 1`,
         [requestedRoleId],
       );
       if (!requestedRole.length)
@@ -793,7 +884,27 @@ export async function POST(request: NextRequest) {
       const roleId = existing[0]?.is_owner_god
         ? existing[0].role_id
         : requestedRoleId;
-      const willBeGod = requestedRole[0].name === "God";
+      const currentRolePermissions = validPermissions(
+        existing[0]?.role_permissions,
+      );
+      const nextRolePermissions = existing[0]?.is_owner_god
+        ? currentRolePermissions
+        : validPermissions(requestedRole[0].permissions);
+      if (
+        !canManagePermissionChanges({
+          actorPermissions: permissions,
+          actorIsGod: Boolean(actor.is_god),
+          currentPermissions: currentRolePermissions,
+          nextPermissions: nextRolePermissions,
+        })
+      )
+        return fail(
+          "Você só pode atribuir ou remover permissões que já possui. Central de notificações e relatório de acessos são delegados somente por um God.",
+          403,
+        );
+      const willBeGod = existing[0]?.is_owner_god
+        ? true
+        : requestedRole[0].name === "God";
       const rawAnswers = Array.isArray(body.securityAnswers)
         ? body.securityAnswers.filter(
             (a: { question?: string; answer?: string }) =>
@@ -931,28 +1042,50 @@ export async function POST(request: NextRequest) {
         return fail("Sem permissão para criar perfis.", 403);
       const id = body.id ? String(body.id) : null;
       const name = String(body.name || "").trim();
-      const allowed = Array.isArray(body.permissions)
-        ? body.permissions.filter(
-            (permission: unknown): permission is Permission =>
-              PERMISSIONS.includes(permission as Permission),
-          )
-        : [];
+      const allowed = validPermissions(body.permissions);
       if (name.length < 2) return fail("Informe o nome do perfil.");
       if (id) {
-        const target = await db.query(`SELECT name FROM roles WHERE id=$1`, [
-          id,
-        ]);
+        const target = await db.query(
+          `SELECT name,permissions FROM roles WHERE id=$1`,
+          [id],
+        );
+        if (!target.length) return fail("Perfil não encontrado.", 404);
         if (target[0]?.name === "God")
           return fail("O perfil God é protegido.", 403);
+        if (
+          !canManagePermissionChanges({
+            actorPermissions: permissions,
+            actorIsGod: Boolean(actor.is_god),
+            currentPermissions: validPermissions(target[0].permissions),
+            nextPermissions: allowed,
+          })
+        )
+          return fail(
+            "Você só pode atribuir ou remover permissões que já possui. Central de notificações e relatório de acessos são delegados somente por um God.",
+            403,
+          );
         await db.query(
           `UPDATE roles SET name=$1,color=$2,permissions=$3::jsonb WHERE id=$4`,
           [name, String(body.color || "#64748b"), JSON.stringify(allowed), id],
         );
-      } else
+      } else {
+        if (
+          !canManagePermissionChanges({
+            actorPermissions: permissions,
+            actorIsGod: Boolean(actor.is_god),
+            currentPermissions: [],
+            nextPermissions: allowed,
+          })
+        )
+          return fail(
+            "Você só pode atribuir permissões que já possui. Central de notificações e relatório de acessos são delegados somente por um God.",
+            403,
+          );
         await db.query(
           `INSERT INTO roles(name,color,permissions) VALUES ($1,$2,$3::jsonb)`,
           [name, String(body.color || "#64748b"), JSON.stringify(allowed)],
         );
+      }
       await audit(`Perfil ${name} salvo`);
     } else if (action === "role.delete") {
       if (!actor.is_god)

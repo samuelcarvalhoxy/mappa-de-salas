@@ -1,6 +1,7 @@
 import { neon, NeonQueryFunction } from "@neondatabase/serverless";
 import bcrypt from "bcryptjs";
 import type { Permission } from "./types";
+import { SECURITY_FIELDS } from "./security-options";
 
 let client: NeonQueryFunction<false, false> | null = null;
 let ready: Promise<void> | null = null;
@@ -54,6 +55,21 @@ async function initialize() {
   await db.query(
     `ALTER TABLE users ADD COLUMN IF NOT EXISTS is_owner_god boolean NOT NULL DEFAULT false`,
   );
+  await db.query(
+    `ALTER TABLE users ADD COLUMN IF NOT EXISTS last_login_at timestamptz`,
+  );
+  await db.query(
+    `ALTER TABLE users ADD COLUMN IF NOT EXISTS last_seen_at timestamptz`,
+  );
+  await db.query(
+    `ALTER TABLE users ADD COLUMN IF NOT EXISTS login_count int NOT NULL DEFAULT 0`,
+  );
+  await db.query(
+    `ALTER TABLE users ADD COLUMN IF NOT EXISTS request_reminders_enabled boolean NOT NULL DEFAULT true`,
+  );
+  await db.query(
+    `ALTER TABLE users ADD COLUMN IF NOT EXISTS last_request_reminder_at timestamptz`,
+  );
   await db.query(`CREATE TABLE IF NOT EXISTS rooms (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(), name text NOT NULL, location text NOT NULL DEFAULT '',
     kind text NOT NULL DEFAULT 'physical', capacity int NOT NULL DEFAULT 1, resources text NOT NULL DEFAULT '',
@@ -101,6 +117,15 @@ async function initialize() {
   await db.query(
     `CREATE INDEX IF NOT EXISTS booking_requests_requester_idx ON booking_requests(requester_id,created_at DESC)`,
   );
+  await db.query(
+    `ALTER TABLE booking_requests ADD COLUMN IF NOT EXISTS urgent boolean NOT NULL DEFAULT false`,
+  );
+  await db.query(
+    `ALTER TABLE booking_requests ADD COLUMN IF NOT EXISTS urgent_acknowledged_at timestamptz`,
+  );
+  await db.query(
+    `ALTER TABLE booking_requests ADD COLUMN IF NOT EXISTS urgent_acknowledged_by uuid REFERENCES users(id)`,
+  );
   await db.query(`CREATE TABLE IF NOT EXISTS shifts (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(), name text UNIQUE NOT NULL, start_time text NOT NULL, end_time text NOT NULL
   )`);
@@ -140,6 +165,9 @@ async function initialize() {
     CHECK (type IN ('bug','suggestion')), CHECK (status IN ('open','in_review','resolved'))
   )`);
   await db.query(
+    `ALTER TABLE feedback_reports ADD COLUMN IF NOT EXISTS category text NOT NULL DEFAULT 'Geral'`,
+  );
+  await db.query(
     `CREATE INDEX IF NOT EXISTS feedback_reports_status_created_idx ON feedback_reports(status,created_at DESC)`,
   );
   await db.query(`CREATE TABLE IF NOT EXISTS feedback_rate_limits (
@@ -154,6 +182,18 @@ async function initialize() {
   await db.query(
     `CREATE INDEX IF NOT EXISTS notifications_user_created_idx ON notifications(user_id,created_at DESC)`,
   );
+  await db.query(`CREATE TABLE IF NOT EXISTS notification_templates (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(), name text NOT NULL, title text NOT NULL, body text NOT NULL,
+    created_by uuid REFERENCES users(id), created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now()
+  )`);
+  await db.query(`CREATE TABLE IF NOT EXISTS notification_broadcasts (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(), sender_id uuid REFERENCES users(id), title text NOT NULL, body text NOT NULL,
+    audience_label text NOT NULL, recipients jsonb NOT NULL DEFAULT '[]'::jsonb, created_at timestamptz NOT NULL DEFAULT now()
+  )`);
+  await db.query(`CREATE TABLE IF NOT EXISTS retention_rollups (
+    month date NOT NULL, actor_key text NOT NULL, action text NOT NULL, event_count int NOT NULL DEFAULT 0,
+    PRIMARY KEY(month,actor_key,action)
+  )`);
 
   const roles = [
     {
@@ -166,8 +206,12 @@ async function initialize() {
         "booking.manage_all",
         "booking.request",
         "booking.review",
+        "booking.checkout_own",
+        "booking.checkout_all",
         "room.manage",
         "issue.resolve",
+        "notification.send",
+        "access.report",
         "user.manage",
         "user.delete",
         "security.reset",
@@ -184,6 +228,8 @@ async function initialize() {
         "booking.create_own",
         "booking.create_all",
         "booking.manage_all",
+        "booking.checkout_own",
+        "booking.checkout_all",
         "room.manage",
         "user.manage",
         "audit.view",
@@ -197,6 +243,8 @@ async function initialize() {
         "booking.create_own",
         "booking.create_all",
         "booking.manage_all",
+        "booking.checkout_own",
+        "booking.checkout_all",
         "room.manage",
         "user.manage",
       ],
@@ -205,7 +253,7 @@ async function initialize() {
       name: "Usuário",
       color: "#34785a",
       system: true,
-      permissions: ["booking.request"],
+      permissions: ["booking.request", "booking.checkout_own"],
     },
   ];
   for (const role of roles) {
@@ -215,13 +263,16 @@ async function initialize() {
     );
   }
   await db.query(
-    `UPDATE roles SET permissions=(SELECT jsonb_agg(DISTINCT value) FROM jsonb_array_elements(permissions || '["security.reset","user.delete","stats.view","booking.request","booking.review","issue.resolve"]'::jsonb)) WHERE name='God'`,
+    `UPDATE roles SET permissions=(SELECT jsonb_agg(DISTINCT value) FROM jsonb_array_elements(permissions || '["security.reset","user.delete","stats.view","booking.request","booking.review","issue.resolve","booking.checkout_own","booking.checkout_all","notification.send","access.report"]'::jsonb)) WHERE name='God'`,
   );
   await db.query(
     `UPDATE roles SET permissions=COALESCE((SELECT jsonb_agg(value) FROM jsonb_array_elements(permissions - 'room.occupy' - 'room.release_own' - 'room.manage_all')), '[]'::jsonb)`,
   );
   await db.query(
-    `UPDATE roles SET permissions=(SELECT jsonb_agg(DISTINCT value) FROM jsonb_array_elements((permissions - 'booking.create_own') || '["booking.request"]'::jsonb)) WHERE name='Usuário'`,
+    `UPDATE roles SET permissions=(SELECT jsonb_agg(DISTINCT value) FROM jsonb_array_elements((permissions - 'booking.create_own') || '["booking.request","booking.checkout_own"]'::jsonb)) WHERE name='Usuário'`,
+  );
+  await db.query(
+    `UPDATE roles SET permissions=(SELECT jsonb_agg(DISTINCT value) FROM jsonb_array_elements(permissions || '["booking.checkout_own","booking.checkout_all"]'::jsonb)) WHERE name IN ('Gestão','ADM')`,
   );
   await db.query(
     `UPDATE reservations SET status='reserved',updated_at=now() WHERE status IN ('active','completed','no_show')`,
@@ -243,6 +294,12 @@ async function initialize() {
   );
   await db.query(
     `INSERT INTO shifts(name,start_time,end_time) VALUES ('Manhã','08:00','14:20'),('Tarde','14:40','21:00'),('Diurno','08:00','17:00'),('Dia todo','08:00','21:00') ON CONFLICT(name) DO NOTHING`,
+  );
+  await db.query(
+    `UPDATE shifts SET start_time='08:00',end_time='14:20' WHERE name='Manhã'`,
+  );
+  await db.query(
+    `UPDATE shifts SET start_time='14:20',end_time='21:00' WHERE name='Tarde'`,
   );
   await db.query(
     `INSERT INTO development_team(name,role,display_order) VALUES
@@ -276,6 +333,112 @@ async function initialize() {
         (process.env.GOD_USERNAME || "samuel").toLowerCase(),
         hash,
         godRole[0].id,
+      ],
+    );
+  }
+
+  if (process.env.VERCEL_ENV === "preview") {
+    await ensurePreviewTestData(db);
+  }
+}
+
+async function ensurePreviewTestData(db: NeonQueryFunction<false, false>) {
+  const password = process.env.PREVIEW_TEST_PASSWORD;
+  if (!password) return;
+
+  const username = (process.env.PREVIEW_TEST_USERNAME || "mappa.teste")
+    .trim()
+    .toLowerCase();
+  const name = process.env.PREVIEW_TEST_NAME || "Acesso de Teste";
+  const godRole = await db.query(`SELECT id FROM roles WHERE name='God' LIMIT 1`);
+  const existingUsers = await db.query(
+    `SELECT id,password_hash,security_answers FROM users WHERE username=$1 LIMIT 1`,
+    [username],
+  );
+  const existingUser = existingUsers[0];
+  const passwordMatches = existingUser
+    ? await bcrypt.compare(password, existingUser.password_hash)
+    : false;
+  const passwordHash = passwordMatches
+    ? existingUser.password_hash
+    : await bcrypt.hash(password, 12);
+
+  let testUserId: string;
+  if (existingUser) {
+    await db.query(
+      `UPDATE users SET name=$1,password_hash=$2,role_id=$3,is_god=true,active=true,deleted_at=NULL,failed_logins=0,locked_until=NULL,updated_at=now() WHERE id=$4`,
+      [name, passwordHash, godRole[0].id, existingUser.id],
+    );
+    testUserId = existingUser.id;
+  } else {
+    const inserted = await db.query(
+      `INSERT INTO users(name,username,password_hash,role_id,is_god,is_owner_god) VALUES ($1,$2,$3,$4,true,false) RETURNING id`,
+      [name, username, passwordHash, godRole[0].id],
+    );
+    testUserId = inserted[0].id;
+  }
+
+  const savedAnswers = Array.isArray(existingUser?.security_answers)
+    ? existingUser.security_answers
+    : [];
+  if (savedAnswers.length < 2) {
+    const securityAnswers = await Promise.all(
+      SECURITY_FIELDS.map(async (field) => ({
+        question: field.question,
+        hash: await bcrypt.hash(
+          field.options[0].toLocaleLowerCase("pt-BR"),
+          12,
+        ),
+      })),
+    );
+    await db.query(
+      `UPDATE users SET security_answers=$1::jsonb,updated_at=now() WHERE id=$2`,
+      [JSON.stringify(securityAnswers), testUserId],
+    );
+  }
+
+  const roomCount = await db.query(
+    `SELECT count(*)::int count FROM rooms WHERE active=true`,
+  );
+  if (Number(roomCount[0]?.count) > 0) return;
+
+  const rooms = await db.query(
+    `INSERT INTO rooms(name,location,kind,capacity,resources,network_status,chairs,tables,workstations) VALUES
+      ('Sala de Treinamento 01','Anexo SAC, térreo','physical',24,'Projetor, quadro e videoconferência','Disponível',24,12,18),
+      ('Sala de Treinamento 02','Anexo SAC, térreo','physical',18,'TV, quadro e webcam','Disponível',18,9,12),
+      ('Sala Híbrida','Edifício principal, 1º andar','physical',12,'Videoconferência, TV e quadro','Disponível',12,6,8),
+      ('Laboratório de Informática','Edifício principal, 2º andar','physical',20,'Projetor e computadores','Disponível',20,10,20),
+      ('Sala Virtual Teams','Online','virtual',100,'Microsoft Teams','Não se aplica',0,0,0)
+     RETURNING id,name`,
+  );
+
+  const samples = [
+    [0, 0, "08:00", "10:00", "Treinamento de integração"],
+    [1, 0, "10:00", "12:00", "Reunião de projeto"],
+    [2, 0, "14:20", "17:00", "Oficina de produto"],
+    [0, 1, "08:00", "14:20", "Capacitação da equipe"],
+    [3, 1, "14:20", "18:00", "Laboratório prático"],
+    [4, 2, "09:00", "11:00", "Encontro remoto"],
+    [2, 3, "21:00", "23:30", "Manutenção programada"],
+    [1, 4, "14:20", "21:00", "Planejamento semanal"],
+  ] as const;
+
+  for (const [roomIndex, dayOffset, startTime, endTime, reason] of samples) {
+    await db.query(
+      `INSERT INTO reservations(room_id,user_id,reason,starts_at,ends_at,shareable,expected_people,status,created_by)
+       VALUES (
+         $1,$2,$3,
+         (((now() AT TIME ZONE 'America/Bahia')::date + $4::int)::text || ' ' || $5)::timestamp AT TIME ZONE 'America/Bahia',
+         (((now() AT TIME ZONE 'America/Bahia')::date + $4::int)::text || ' ' || $6)::timestamp AT TIME ZONE 'America/Bahia',
+         false,1,'reserved',$2
+       )`,
+      [
+        rooms[roomIndex].id,
+        testUserId,
+        reason,
+        dayOffset,
+        startTime,
+        endTime,
       ],
     );
   }

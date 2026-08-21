@@ -4,8 +4,12 @@ export const PERMISSIONS = [
   "booking.manage_all",
   "booking.request",
   "booking.review",
+  "booking.checkout_own",
+  "booking.checkout_all",
   "room.manage",
   "issue.resolve",
+  "notification.send",
+  "access.report",
   "user.manage",
   "user.delete",
   "security.reset",
@@ -73,6 +77,7 @@ export type DevelopmentMember = {
 export type FeedbackReport = {
   id: string;
   type: "bug" | "suggestion";
+  category: string;
   title: string;
   description: string;
   reporterName: string;
@@ -87,6 +92,24 @@ export type SystemNotification = {
   body: string;
   url: string;
   readAt: string | null;
+  createdAt: string;
+};
+
+export type NotificationTemplate = {
+  id: string;
+  name: string;
+  title: string;
+  body: string;
+  createdAt: string;
+};
+
+export type NotificationBroadcast = {
+  id: string;
+  senderName: string;
+  title: string;
+  body: string;
+  audienceLabel: string;
+  recipients: string[];
   createdAt: string;
 };
 
@@ -122,6 +145,8 @@ export type BookingRequest = {
   reviewedAt: string | null;
   createdAt: string;
   updatedAt: string;
+  urgent: boolean;
+  urgentAcknowledgedAt: string | null;
 };
 
 export type Role = {
@@ -141,6 +166,10 @@ export type ManagedUser = {
   isGod: boolean;
   isOwnerGod: boolean;
   hasSecurityAnswers: boolean;
+  lastLoginAt: string | null;
+  lastSeenAt: string | null;
+  loginCount: number;
+  requestRemindersEnabled: boolean;
 };
 
 export type AppState = {
@@ -156,6 +185,8 @@ export type AppState = {
   developmentTeam: DevelopmentMember[];
   feedbackReports: FeedbackReport[];
   notifications: SystemNotification[];
+  notificationTemplates: NotificationTemplate[];
+  notificationBroadcasts: NotificationBroadcast[];
   shifts: { id: string; name: string; startTime: string; endTime: string }[];
   audit: {
     id: string;

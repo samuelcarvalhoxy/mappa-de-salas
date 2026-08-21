@@ -165,12 +165,23 @@ export async function handleFacilityAction({
   }
 
   if (action === "issue.resolve") {
-    if (!requirePermission("issue.resolve"))
-      return fail("Sem permissão para resolver problemas de sala.", 403);
     const issueId = String(body.id || "");
+    const openIssue = await db.query(
+      `SELECT reporter_id FROM room_issues WHERE id=$1 AND status='open' LIMIT 1`,
+      [issueId],
+    );
+    if (!openIssue.length)
+      return fail("Problema não encontrado ou já resolvido.", 404);
+    const isReporter = String(openIssue[0].reporter_id) === actorId;
+    if (!isReporter && !requirePermission("issue.resolve"))
+      return fail(
+        "Somente quem registrou o problema ou um perfil autorizado pode resolvê-lo.",
+        403,
+      );
     const issue = await db.query(
-      `UPDATE room_issues SET status='resolved',resolved_by=$1,resolved_at=now() WHERE id=$2 AND status='open' RETURNING room_id`,
-      [actorId, issueId],
+      `UPDATE room_issues SET status='resolved',resolved_by=$1,resolved_at=now()
+       WHERE id=$2 AND status='open' AND (reporter_id=$1 OR $3::boolean) RETURNING room_id`,
+      [actorId, issueId, requirePermission("issue.resolve")],
     );
     if (!issue.length)
       return fail("Problema não encontrado ou já resolvido.", 404);

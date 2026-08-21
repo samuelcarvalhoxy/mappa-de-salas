@@ -69,7 +69,7 @@ export async function POST(request: NextRequest) {
       );
     }
     await sql().query(
-      `UPDATE users SET failed_logins=0,locked_until=NULL WHERE id=$1`,
+      `UPDATE users SET failed_logins=0,locked_until=NULL,last_login_at=now(),last_seen_at=now(),login_count=login_count+1 WHERE id=$1`,
       [user.id],
     );
     const securityAnswers = Array.isArray(user.security_answers)

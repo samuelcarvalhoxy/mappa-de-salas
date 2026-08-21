@@ -7,6 +7,10 @@ import { checkFeedbackRateLimit } from "@/lib/feedback-rate-limit";
 
 const feedbackSchema = z.object({
   type: z.enum(["bug", "suggestion"]),
+  category: z
+    .enum(["Geral", "Interface", "Reservas", "Notificações", "Acesso", "Salas", "Outro"])
+    .optional()
+    .default("Geral"),
   title: z.string().trim().min(3).max(140),
   description: z.string().trim().min(10).max(5000),
   reporterName: z.string().trim().max(120).optional().default(""),
@@ -74,10 +78,11 @@ export async function POST(request: NextRequest) {
     );
 
   await db.query(
-    `INSERT INTO feedback_reports(type,title,description,reporter_id,reporter_name,reporter_email)
-     VALUES ($1,$2,$3,$4,$5,$6)`,
+    `INSERT INTO feedback_reports(type,category,title,description,reporter_id,reporter_name,reporter_email)
+     VALUES ($1,$2,$3,$4,$5,$6,$7)`,
     [
       parsed.data.type,
+      parsed.data.category,
       parsed.data.title,
       parsed.data.description,
       sessionUser?.id || null,
@@ -85,6 +90,15 @@ export async function POST(request: NextRequest) {
       parsed.data.reporterEmail,
     ],
   );
+  if (sessionUser?.id)
+    await db.query(
+      `INSERT INTO audit_log(actor_id,action,details) VALUES ($1,$2,$3)`,
+      [
+        sessionUser.id,
+        parsed.data.type === "bug" ? "feedback.bug" : "feedback.suggestion",
+        parsed.data.title,
+      ],
+    );
   const gods = await db.query(
     `SELECT id FROM users WHERE is_god=true AND active=true AND deleted_at IS NULL`,
   );

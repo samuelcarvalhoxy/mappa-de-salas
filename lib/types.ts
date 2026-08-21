@@ -9,6 +9,7 @@ export const PERMISSIONS = [
   "room.manage",
   "issue.resolve",
   "notification.send",
+  "access.report",
   "user.manage",
   "user.delete",
   "security.reset",

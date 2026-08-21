@@ -211,6 +211,7 @@ async function initialize() {
         "room.manage",
         "issue.resolve",
         "notification.send",
+        "access.report",
         "user.manage",
         "user.delete",
         "security.reset",
@@ -262,7 +263,7 @@ async function initialize() {
     );
   }
   await db.query(
-    `UPDATE roles SET permissions=(SELECT jsonb_agg(DISTINCT value) FROM jsonb_array_elements(permissions || '["security.reset","user.delete","stats.view","booking.request","booking.review","issue.resolve","booking.checkout_own","booking.checkout_all","notification.send"]'::jsonb)) WHERE name='God'`,
+    `UPDATE roles SET permissions=(SELECT jsonb_agg(DISTINCT value) FROM jsonb_array_elements(permissions || '["security.reset","user.delete","stats.view","booking.request","booking.review","issue.resolve","booking.checkout_own","booking.checkout_all","notification.send","access.report"]'::jsonb)) WHERE name='God'`,
   );
   await db.query(
     `UPDATE roles SET permissions=COALESCE((SELECT jsonb_agg(value) FROM jsonb_array_elements(permissions - 'room.occupy' - 'room.release_own' - 'room.manage_all')), '[]'::jsonb)`,

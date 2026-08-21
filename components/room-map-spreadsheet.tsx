@@ -160,7 +160,11 @@ function SpreadsheetShift({
         {rooms.map((room) => (
           <tr key={`${shift.id}:${room.id}`}>
             <th scope="row">
-              <button type="button" onClick={() => onInspect(room)}>
+              <button
+                type="button"
+                title={`${room.name} | ${room.location || "Local não informado"}`}
+                onClick={() => onInspect(room)}
+              >
                 <strong>{room.name}</strong>
                 <small>{room.location || "Local não informado"}</small>
               </button>

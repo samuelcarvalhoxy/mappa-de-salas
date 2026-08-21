@@ -75,6 +75,10 @@ import {
   securityOptionsFor,
 } from "@/lib/security-options";
 import {
+  canDirectlyManagePermission,
+  canManagePermissionChanges,
+} from "@/lib/permission-policy";
+import {
   MAP_SHIFTS,
   mapShiftBounds,
   mapShiftForNow,
@@ -129,6 +133,7 @@ const PERMISSION_LABELS: Record<Permission, string> = {
   "room.manage": "Cadastrar e editar salas",
   "issue.resolve": "Resolver problemas reportados nas salas",
   "notification.send": "Enviar notificações e administrar modelos",
+  "access.report": "Consultar relatório de acessos",
   "user.manage": "Cadastrar e editar usuários",
   "user.delete": "Excluir usuários",
   "security.reset": "Resetar respostas de segurança",
@@ -358,7 +363,7 @@ export function AppShell() {
       id: "access-report",
       label: "Relatório de acessos",
       icon: Users,
-      show: can("audit.view"),
+      show: can("access.report"),
     },
     { id: "audit", label: "Histórico", icon: History, show: can("audit.view") },
     {
@@ -701,7 +706,7 @@ export function AppShell() {
           {activeTab === "notifications-admin" && (
             <NotificationManagement state={state} onAction={act} />
           )}
-          {activeTab === "access-report" && (
+          {activeTab === "access-report" && can("access.report") && (
             <>
               <UsageGuardCard />
               <AccessReportView state={state} />
@@ -905,6 +910,7 @@ export function AppShell() {
       {modal?.type === "role" && (
         <RoleModal
           role={modal.data as Role | undefined}
+          currentUser={user}
           onClose={() => setModal(null)}
           onSave={(data) =>
             act({ action: "role.save", ...(data as object) }, "Perfil salvo.")
@@ -5252,7 +5258,17 @@ function UserModal({
   onSave: (v: unknown) => void;
 }) {
   const availableRoles = state.roles.filter(
-    (role) => role.name !== "God" || canCreateGod,
+    (role) =>
+      (role.name !== "God" || canCreateGod) &&
+      Boolean(state.currentUser) &&
+      canManagePermissionChanges({
+        actorPermissions: state.currentUser?.permissions || [],
+        actorIsGod: Boolean(state.currentUser?.isGod),
+        currentPermissions:
+          state.roles.find((currentRole) => currentRole.id === user?.roleId)
+            ?.permissions || [],
+        nextPermissions: role.permissions,
+      }),
   );
   const defaultRoleId =
     availableRoles.find((role) => role.name === "Usuário")?.id ||
@@ -5377,17 +5393,22 @@ function UserModal({
 
 function RoleModal({
   role,
+  currentUser,
   onClose,
   onSave,
 }: {
   role?: Role;
+  currentUser: NonNullable<AppState["currentUser"]>;
   onClose: () => void;
   onSave: (v: unknown) => void;
 }) {
   const [name, setName] = useState(role?.name || "");
   const [color, setColor] = useState(role?.color || "#34785a");
   const [permissions, setPermissions] = useState<Permission[]>(
-    role?.permissions || ["booking.create_own"],
+    role?.permissions ||
+      (currentUser.permissions.includes("booking.create_own")
+        ? ["booking.create_own"]
+        : []),
   );
   const toggle = (p: Permission) =>
     setPermissions((old) =>
@@ -5425,18 +5446,36 @@ function RoleModal({
           </label>
         </div>
         <div className="permission-list">
-          {(Object.keys(PERMISSION_LABELS) as Permission[]).map((p) => (
-            <label className="check-row" key={p}>
-              <input
-                type="checkbox"
-                checked={permissions.includes(p)}
-                onChange={() => toggle(p)}
-              />
-              <span>
-                <strong>{PERMISSION_LABELS[p]}</strong>
-              </span>
-            </label>
-          ))}
+          {(Object.keys(PERMISSION_LABELS) as Permission[]).map((p) => {
+            const editable = canDirectlyManagePermission(
+              p,
+              currentUser.permissions,
+              currentUser.isGod,
+            );
+            return (
+              <label
+                className={`check-row ${editable ? "" : "permission-locked"}`}
+                key={p}
+              >
+                <input
+                  type="checkbox"
+                  checked={permissions.includes(p)}
+                  disabled={!editable}
+                  onChange={() => toggle(p)}
+                />
+                <span>
+                  <strong>{PERMISSION_LABELS[p]}</strong>
+                  {!editable && (
+                    <small>
+                      {p === "notification.send" || p === "access.report"
+                        ? "Delegação exclusiva de God"
+                        : "Você não possui esta permissão"}
+                    </small>
+                  )}
+                </span>
+              </label>
+            );
+          })}
         </div>
         <ModalActions onClose={onClose} submit="Salvar perfil" />
       </form>

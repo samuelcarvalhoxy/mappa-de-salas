@@ -7,6 +7,7 @@ import {
   SECURITY_QUESTIONS,
 } from "@/lib/security-options";
 import { PERMISSIONS, type Permission } from "@/lib/types";
+import { canManagePermissionChanges } from "@/lib/permission-policy";
 import {
   isValidDate,
   isValidTimeRange,
@@ -21,6 +22,15 @@ import { handleNotificationAction } from "@/lib/action-handlers/notifications";
 
 function fail(error: string, status = 400) {
   return NextResponse.json({ error }, { status });
+}
+
+function validPermissions(value: unknown): Permission[] {
+  return Array.isArray(value)
+    ? value.filter(
+        (permission: unknown): permission is Permission =>
+          PERMISSIONS.includes(permission as Permission),
+      )
+    : [];
 }
 
 function replacementConfirmationRequired(conflictCount: number) {
@@ -846,7 +856,9 @@ export async function POST(request: NextRequest) {
         return fail("Preencha nome, usuário e perfil.");
       const existing = id
         ? await db.query(
-            `SELECT id,username,role_id,is_god,is_owner_god FROM users WHERE id=$1 AND deleted_at IS NULL`,
+            `SELECT u.id,u.username,u.role_id,u.is_god,u.is_owner_god,r.permissions role_permissions
+             FROM users u JOIN roles r ON r.id=u.role_id
+             WHERE u.id=$1 AND u.deleted_at IS NULL`,
             [id],
           )
         : [];
@@ -862,7 +874,7 @@ export async function POST(request: NextRequest) {
           403,
         );
       const requestedRole = await db.query(
-        `SELECT id,name FROM roles WHERE id=$1 LIMIT 1`,
+        `SELECT id,name,permissions FROM roles WHERE id=$1 LIMIT 1`,
         [requestedRoleId],
       );
       if (!requestedRole.length)
@@ -872,7 +884,27 @@ export async function POST(request: NextRequest) {
       const roleId = existing[0]?.is_owner_god
         ? existing[0].role_id
         : requestedRoleId;
-      const willBeGod = requestedRole[0].name === "God";
+      const currentRolePermissions = validPermissions(
+        existing[0]?.role_permissions,
+      );
+      const nextRolePermissions = existing[0]?.is_owner_god
+        ? currentRolePermissions
+        : validPermissions(requestedRole[0].permissions);
+      if (
+        !canManagePermissionChanges({
+          actorPermissions: permissions,
+          actorIsGod: Boolean(actor.is_god),
+          currentPermissions: currentRolePermissions,
+          nextPermissions: nextRolePermissions,
+        })
+      )
+        return fail(
+          "Você só pode atribuir ou remover permissões que já possui. Central de notificações e relatório de acessos são delegados somente por um God.",
+          403,
+        );
+      const willBeGod = existing[0]?.is_owner_god
+        ? true
+        : requestedRole[0].name === "God";
       const rawAnswers = Array.isArray(body.securityAnswers)
         ? body.securityAnswers.filter(
             (a: { question?: string; answer?: string }) =>
@@ -1010,28 +1042,50 @@ export async function POST(request: NextRequest) {
         return fail("Sem permissão para criar perfis.", 403);
       const id = body.id ? String(body.id) : null;
       const name = String(body.name || "").trim();
-      const allowed = Array.isArray(body.permissions)
-        ? body.permissions.filter(
-            (permission: unknown): permission is Permission =>
-              PERMISSIONS.includes(permission as Permission),
-          )
-        : [];
+      const allowed = validPermissions(body.permissions);
       if (name.length < 2) return fail("Informe o nome do perfil.");
       if (id) {
-        const target = await db.query(`SELECT name FROM roles WHERE id=$1`, [
-          id,
-        ]);
+        const target = await db.query(
+          `SELECT name,permissions FROM roles WHERE id=$1`,
+          [id],
+        );
+        if (!target.length) return fail("Perfil não encontrado.", 404);
         if (target[0]?.name === "God")
           return fail("O perfil God é protegido.", 403);
+        if (
+          !canManagePermissionChanges({
+            actorPermissions: permissions,
+            actorIsGod: Boolean(actor.is_god),
+            currentPermissions: validPermissions(target[0].permissions),
+            nextPermissions: allowed,
+          })
+        )
+          return fail(
+            "Você só pode atribuir ou remover permissões que já possui. Central de notificações e relatório de acessos são delegados somente por um God.",
+            403,
+          );
         await db.query(
           `UPDATE roles SET name=$1,color=$2,permissions=$3::jsonb WHERE id=$4`,
           [name, String(body.color || "#64748b"), JSON.stringify(allowed), id],
         );
-      } else
+      } else {
+        if (
+          !canManagePermissionChanges({
+            actorPermissions: permissions,
+            actorIsGod: Boolean(actor.is_god),
+            currentPermissions: [],
+            nextPermissions: allowed,
+          })
+        )
+          return fail(
+            "Você só pode atribuir permissões que já possui. Central de notificações e relatório de acessos são delegados somente por um God.",
+            403,
+          );
         await db.query(
           `INSERT INTO roles(name,color,permissions) VALUES ($1,$2,$3::jsonb)`,
           [name, String(body.color || "#64748b"), JSON.stringify(allowed)],
         );
+      }
       await audit(`Perfil ${name} salvo`);
     } else if (action === "role.delete") {
       if (!actor.is_god)

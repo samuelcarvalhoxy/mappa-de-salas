@@ -62,6 +62,8 @@ export async function GET() {
   const canRequest = user.is_god || permissions.includes("booking.request");
   const canSendNotifications =
     user.is_god || permissions.includes("notification.send");
+  const canAccessReport =
+    user.is_god || permissions.includes("access.report");
   const [
     rooms,
     reservations,
@@ -105,6 +107,7 @@ export async function GET() {
       permissions.includes("role.manage") ||
       permissions.includes("user.manage") ||
       permissions.includes("notification.send") ||
+      permissions.includes("access.report") ||
       permissions.includes("audit.view")
         ? db.query(
             `SELECT id,name,color,permissions,system FROM roles ORDER BY system DESC,name`,
@@ -116,12 +119,20 @@ export async function GET() {
       permissions.includes("stats.view") ||
       permissions.includes("audit.view") ||
       permissions.includes("notification.send") ||
+      permissions.includes("access.report") ||
       permissions.includes("booking.create_all") ||
       permissions.includes("booking.manage_all") ||
       user.is_god
-        ? db.query(`SELECT u.id,u.name,u.username,u.role_id,r.name role_name,u.active,u.is_god,u.is_owner_god,
-      jsonb_array_length(u.security_answers) security_answer_count,u.last_login_at,u.last_seen_at,u.login_count,u.request_reminders_enabled
-      FROM users u JOIN roles r ON r.id=u.role_id WHERE u.deleted_at IS NULL ORDER BY u.name`)
+        ? db.query(
+            `SELECT u.id,u.name,u.username,u.role_id,r.name role_name,u.active,u.is_god,u.is_owner_god,
+      jsonb_array_length(u.security_answers) security_answer_count,
+      CASE WHEN $1::boolean THEN u.last_login_at ELSE NULL END last_login_at,
+      CASE WHEN $1::boolean THEN u.last_seen_at ELSE NULL END last_seen_at,
+      CASE WHEN $1::boolean THEN u.login_count ELSE 0 END login_count,
+      u.request_reminders_enabled
+      FROM users u JOIN roles r ON r.id=u.role_id WHERE u.deleted_at IS NULL ORDER BY u.name`,
+            [canAccessReport],
+          )
         : Promise.resolve([]),
       permissions.includes("audit.view")
         ? db.query(

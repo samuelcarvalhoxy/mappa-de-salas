@@ -19,7 +19,7 @@ jobs:
     steps:
       - name: Acionar lembretes e retenção
         env:
-          AUTOMATION_URL: ${{ vars.MAPPA_AUTOMATION_URL }}
+          AUTOMATION_URL: https://mappa-de-salas.vercel.app
           AUTOMATION_SECRET: ${{ secrets.REMINDER_CRON_SECRET }}
         run: |
           test -n "$AUTOMATION_URL"

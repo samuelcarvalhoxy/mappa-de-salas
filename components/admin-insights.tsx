@@ -248,6 +248,8 @@ export function NotificationManagement({
                 <button
                   className="icon-btn danger"
                   title={`Excluir ${template.name}`}
+                  type="button"
+                  aria-label={`Excluir ${template.name}`}
                   onClick={() =>
                     onAction(
                       { action: "notification.template_delete", id: template.id },
@@ -409,11 +411,11 @@ export function AccessReportView({ state }: { state: AppState }) {
           <tbody>
             {filtered.map((user) => (
               <tr key={user.id}>
-                <td><strong>{user.name}</strong><small>@{user.username}</small></td>
-                <td>{user.roleName}</td>
-                <td>{formatDate(user.lastLoginAt)}</td>
-                <td>{formatDate(user.lastSeenAt)}</td>
-                <td>{user.loginCount}</td>
+                <td data-label="Usuário"><strong>{user.name}</strong><small>@{user.username}</small></td>
+                <td data-label="Perfil">{user.roleName}</td>
+                <td data-label="Último login">{formatDate(user.lastLoginAt)}</td>
+                <td data-label="Última atividade">{formatDate(user.lastSeenAt)}</td>
+                <td data-label="Logins">{user.loginCount}</td>
               </tr>
             ))}
           </tbody>
@@ -429,12 +431,12 @@ export function UsageGuardCard() {
       <div className="panel-head">
         <div>
           <h2>Proteção de consumo</h2>
-          <p>Configuração econômica aplicada ao ambiente de testes.</p>
+          <p>Configuração econômica aplicada ao aplicativo.</p>
         </div>
         <Check size={22} />
       </div>
       <div className="usage-guard-grid">
-        <div><strong>60 segundos</strong><span>Sincronização periódica com a aba visível</span></div>
+        <div><strong>60 segundos</strong><span>Sincronização leve com a aba visível</span></div>
         <div><strong>Zero chamadas</strong><span>Enquanto a aba estiver oculta</span></div>
         <div><strong>48 por dia</strong><span>Máximo teórico da automação de lembretes</span></div>
         <div><strong>Imediata</strong><span>Atualização após qualquer ação do usuário</span></div>

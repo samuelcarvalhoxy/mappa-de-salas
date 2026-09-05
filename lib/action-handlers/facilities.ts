@@ -97,6 +97,9 @@ export async function handleFacilityAction({
     const id = body.id ? String(body.id) : null;
     const name = String(body.name || "").trim();
     if (name.length < 2) return fail("Informe o nome da sala.");
+    const kind = String(body.kind || "physical");
+    if (!["physical", "other"].includes(kind))
+      return fail("Selecione sala física ou outra localidade.");
     const infrastructure = [
       String(body.networkStatus || "Não informado"),
       Math.max(0, Number(body.chairs) || 0),
@@ -109,7 +112,7 @@ export async function handleFacilityAction({
         [
           name,
           String(body.location || ""),
-          String(body.kind || "physical"),
+          kind,
           Math.max(1, Number(body.capacity) || 1),
           String(body.resources || ""),
           ...infrastructure,
@@ -122,7 +125,7 @@ export async function handleFacilityAction({
         [
           name,
           String(body.location || ""),
-          String(body.kind || "physical"),
+          kind,
           Math.max(1, Number(body.capacity) || 1),
           String(body.resources || ""),
           ...infrastructure,

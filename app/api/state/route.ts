@@ -1,4 +1,4 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { getSessionUserId } from "@/lib/auth";
 import {
   ensureDatabase,
@@ -11,7 +11,7 @@ import { getPushConfiguration } from "@/lib/settings";
 
 export const dynamic = "force-dynamic";
 
-export async function GET() {
+export async function GET(request: NextRequest) {
   const empty = {
     currentUser: null,
     rooms: [],
@@ -53,6 +53,7 @@ export async function GET() {
     return NextResponse.json({ error: "Sessão inválida" }, { status: 401 });
   const permissions = permissionsOf(user);
   const db = sql();
+  const syncOnly = request.nextUrl.searchParams.get("mode") === "sync";
   await db.query(
     `UPDATE users SET last_seen_at=now() WHERE id=$1 AND (last_seen_at IS NULL OR last_seen_at<now()-interval '5 minutes')`,
     [user.id],
@@ -79,15 +80,20 @@ export async function GET() {
     notificationTemplates,
     notificationBroadcasts,
   ] = await Promise.all([
-      db.query(
-        `SELECT id,name,location,kind,capacity,resources,network_status,chairs,tables,workstations,active FROM rooms WHERE active=true ORDER BY location,name`,
-      ),
+      syncOnly
+        ? Promise.resolve([])
+        : db.query(
+            `SELECT id,name,location,kind,capacity,resources,network_status,chairs,tables,workstations,active
+             FROM rooms WHERE active=true AND kind<>'virtual' ORDER BY location,name`,
+          ),
       db.query(`SELECT rs.id,rs.room_id,rs.user_id,u.name user_name,u.username user_username,rs.reason,rs.starts_at,rs.ends_at,rs.shareable,
       rs.expected_people,rs.status,rs.created_by,c.name creator_name,rs.series_id FROM reservations rs JOIN users u ON u.id=rs.user_id
-      JOIN users c ON c.id=rs.created_by WHERE rs.ends_at > now() - interval '45 days' AND rs.starts_at < now() + interval '120 days' AND rs.status NOT IN ('cancelled') ORDER BY rs.starts_at`),
+      JOIN users c ON c.id=rs.created_by JOIN rooms r ON r.id=rs.room_id
+      WHERE r.active=true AND r.kind<>'virtual' AND rs.ends_at > now() - interval '45 days'
+        AND rs.starts_at < now() + interval '120 days' AND rs.status NOT IN ('cancelled') ORDER BY rs.starts_at`),
       db.query(`SELECT ri.id,ri.room_id,ri.reporter_id,u.name reporter_name,ri.description,ri.ticket_opened,ri.ticket_reference,
       ri.status,rv.name resolved_by_name,ri.created_at,ri.resolved_at FROM room_issues ri JOIN users u ON u.id=ri.reporter_id
-      LEFT JOIN users rv ON rv.id=ri.resolved_by WHERE ri.status='open' OR ri.resolved_at>now()-interval '30 days' ORDER BY ri.status,ri.created_at DESC`),
+      LEFT JOIN users rv ON rv.id=ri.resolved_by WHERE ri.status='open' OR ri.resolved_at>now()-interval '90 days' ORDER BY ri.status,ri.created_at DESC`),
       canReviewRequests || canRequest
         ? db.query(
             `SELECT br.id,br.requester_id,u.name requester_name,br.room_id,r.name room_name,br.reason,
@@ -96,24 +102,26 @@ export async function GET() {
       rv.name reviewer_name,br.reviewed_at,br.created_at,br.updated_at
       FROM booking_requests br JOIN users u ON u.id=br.requester_id LEFT JOIN rooms r ON r.id=br.room_id
       LEFT JOIN users rv ON rv.id=br.reviewed_by
-      WHERE ($1::boolean OR br.requester_id=$2) AND (br.status='pending' OR br.created_at>now()-interval '120 days')
+      WHERE ($1::boolean OR br.requester_id=$2) AND (br.status='pending' OR br.created_at>now()-interval '90 days')
       ORDER BY CASE WHEN br.status='pending' THEN 0 ELSE 1 END,br.requested_date,br.start_time,br.created_at DESC`,
             [canReviewRequests, user.id],
           )
         : Promise.resolve([]),
-      db.query(
-        `SELECT id,name,start_time,end_time FROM shifts ORDER BY start_time`,
-      ),
-      permissions.includes("role.manage") ||
+      syncOnly
+        ? Promise.resolve([])
+        : db.query(
+            `SELECT id,name,start_time,end_time FROM shifts ORDER BY start_time`,
+          ),
+      !syncOnly && (permissions.includes("role.manage") ||
       permissions.includes("user.manage") ||
       permissions.includes("notification.send") ||
       permissions.includes("access.report") ||
-      permissions.includes("audit.view")
+      permissions.includes("audit.view"))
         ? db.query(
             `SELECT id,name,color,permissions,system FROM roles ORDER BY system DESC,name`,
           )
         : Promise.resolve([]),
-      permissions.includes("user.manage") ||
+      !syncOnly && (permissions.includes("user.manage") ||
       permissions.includes("user.delete") ||
       permissions.includes("security.reset") ||
       permissions.includes("stats.view") ||
@@ -122,7 +130,7 @@ export async function GET() {
       permissions.includes("access.report") ||
       permissions.includes("booking.create_all") ||
       permissions.includes("booking.manage_all") ||
-      user.is_god
+      user.is_god)
         ? db.query(
             `SELECT u.id,u.name,u.username,u.role_id,r.name role_name,u.active,u.is_god,u.is_owner_god,
       jsonb_array_length(u.security_answers) security_answer_count,
@@ -134,36 +142,107 @@ export async function GET() {
             [canAccessReport],
           )
         : Promise.resolve([]),
-      permissions.includes("audit.view")
+      !syncOnly && permissions.includes("audit.view")
         ? db.query(
-            `SELECT a.id,coalesce(u.name,'Sistema') actor_name,a.action,a.details,a.created_at FROM audit_log a LEFT JOIN users u ON u.id=a.actor_id ORDER BY a.created_at DESC LIMIT 100`,
+            `SELECT a.id,coalesce(u.name,'Sistema') actor_name,a.action,a.details,a.created_at
+             FROM audit_log a LEFT JOIN users u ON u.id=a.actor_id
+             WHERE a.created_at>=now()-interval '90 days' ORDER BY a.created_at DESC`,
           )
         : Promise.resolve([]),
-      db.query(
-        `SELECT id,name,role,email,phone,profile_url,display_order FROM development_team ORDER BY display_order,name`,
-      ),
-      user.is_god
+      syncOnly
+        ? Promise.resolve([])
+        : db.query(
+            `SELECT id,name,role,email,phone,profile_url,display_order FROM development_team ORDER BY display_order,name`,
+          ),
+      !syncOnly && user.is_god
         ? db.query(
             `SELECT id,type,category,title,description,reporter_name,reporter_email,status,created_at
-             FROM feedback_reports ORDER BY CASE status WHEN 'open' THEN 0 WHEN 'in_review' THEN 1 ELSE 2 END,created_at DESC LIMIT 100`,
+             FROM feedback_reports
+             WHERE created_at>=now()-interval '90 days' OR status<>'resolved'
+             ORDER BY CASE status WHEN 'open' THEN 0 WHEN 'in_review' THEN 1 ELSE 2 END,created_at DESC`,
           )
         : Promise.resolve([]),
       db.query(
         `SELECT id,title,body,url,read_at,created_at FROM notifications WHERE user_id=$1 ORDER BY created_at DESC LIMIT 50`,
         [user.id],
       ),
-      canSendNotifications
+      !syncOnly && canSendNotifications
         ? db.query(
             `SELECT id,name,title,body,created_at FROM notification_templates ORDER BY name`,
           )
         : Promise.resolve([]),
-      canSendNotifications
+      !syncOnly && canSendNotifications
         ? db.query(
             `SELECT nb.id,coalesce(u.name,'Sistema') sender_name,nb.title,nb.body,nb.audience_label,nb.recipients,nb.created_at
-             FROM notification_broadcasts nb LEFT JOIN users u ON u.id=nb.sender_id ORDER BY nb.created_at DESC LIMIT 100`,
+             FROM notification_broadcasts nb LEFT JOIN users u ON u.id=nb.sender_id
+             WHERE nb.created_at>=now()-interval '90 days' ORDER BY nb.created_at DESC`,
           )
         : Promise.resolve([]),
     ]);
+  if (syncOnly)
+    return NextResponse.json({
+      configured: true,
+      partial: true,
+      now: new Date().toISOString(),
+      reservations: reservations.map((r) => ({
+        id: r.id,
+        roomId: r.room_id,
+        userId: r.user_id,
+        userName: r.user_name,
+        userUsername: r.user_username,
+        reason: r.reason,
+        startsAt: r.starts_at,
+        endsAt: r.ends_at,
+        shareable: r.shareable,
+        expectedPeople: Number(r.expected_people),
+        status: r.status,
+        createdBy: r.created_by,
+        creatorName: r.creator_name,
+        seriesId: r.series_id,
+      })),
+      issues: issues.map((item) => ({
+        id: item.id,
+        roomId: item.room_id,
+        reporterId: item.reporter_id,
+        reporterName: item.reporter_name,
+        description: item.description,
+        ticketOpened: item.ticket_opened,
+        ticketReference: item.ticket_reference,
+        status: item.status,
+        resolvedByName: item.resolved_by_name,
+        createdAt: item.created_at,
+        resolvedAt: item.resolved_at,
+      })),
+      requests: requests.map((item) => ({
+        id: item.id,
+        requesterId: item.requester_id,
+        requesterName: item.requester_name,
+        roomId: item.room_id,
+        roomName: item.room_name,
+        reason: item.reason,
+        requestedDate: item.requested_date,
+        startTime: item.start_time,
+        endTime: item.end_time,
+        shareable: item.shareable,
+        expectedPeople: Number(item.expected_people),
+        status: item.status,
+        reviewComment: item.review_comment,
+        reviewerName: item.reviewer_name,
+        reviewedAt: item.reviewed_at,
+        createdAt: item.created_at,
+        updatedAt: item.updated_at,
+        urgent: Boolean(item.urgent),
+        urgentAcknowledgedAt: item.urgent_acknowledged_at,
+      })),
+      notifications: notifications.map((notification) => ({
+        id: notification.id,
+        title: notification.title,
+        body: notification.body,
+        url: notification.url,
+        readAt: notification.read_at,
+        createdAt: notification.created_at,
+      })),
+    });
   return NextResponse.json({
     configured: true,
     now: new Date().toISOString(),

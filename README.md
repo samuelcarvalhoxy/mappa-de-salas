@@ -4,6 +4,15 @@ Aplicação web responsiva e instalável para gestão de salas, reservas, solici
 
 Produção: https://mappa-de-salas.vercel.app/
 
+## Recursos principais
+
+- Mapa em cartões ou planilha semanal, com sete dias e domingo na última coluna.
+- Edição e cancelamento rápidos na planilha, exportação XLSX e cancelamento em massa por sala, pessoa, período e turno.
+- Reservas únicas, por período ou em até 30 datas alternadas, sempre com domingo indisponível.
+- Validação de horários passados e suporte ao turno Extra que atravessa a meia-noite.
+- Solicitações com confirmação de recebimento e estimativa baseada nos últimos 90 dias.
+- Histórico, relatórios e auditoria com retenção detalhada de 90 dias.
+
 ## Desenvolvimento
 
 Requisitos: Node.js e pnpm.
@@ -42,13 +51,14 @@ O segredo do GitHub deve ser igual ao valor configurado na Vercel. O fluxo agend
 
 ## Proteção do plano gratuito
 
-A sincronização ocorre imediatamente depois de alterações, ao retornar para a aba e, enquanto a tela permanece visível, uma vez por minuto. Abas ocultas não fazem consultas periódicas. A retenção automática remove detalhes operacionais concluídos depois de 90 dias e preserva totais históricos essenciais de forma agregada.
+A sincronização ocorre imediatamente depois de alterações, ao retornar para a aba e, enquanto a tela permanece visível, uma vez por minuto. A atualização periódica consulta somente reservas, solicitações, problemas e notificações. Abas ocultas não fazem consultas periódicas. A retenção automática remove detalhes operacionais concluídos depois de 90 dias e preserva totais históricos essenciais de forma agregada.
 
 ## Validação
 
 ```bash
 pnpm typecheck
 pnpm lint
+pnpm test
 pnpm build
 ```
 

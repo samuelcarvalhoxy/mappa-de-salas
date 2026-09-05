@@ -111,6 +111,25 @@ async function initialize() {
     created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now(),
     CHECK (end_time > start_time), CHECK (status IN ('pending','approved','rejected','cancelled'))
   )`);
+  await db.query(`DO $migration$
+    DECLARE old_constraint text;
+    BEGIN
+      FOR old_constraint IN
+        SELECT conname FROM pg_constraint
+        WHERE conrelid='booking_requests'::regclass AND contype='c'
+          AND pg_get_constraintdef(oid) ILIKE '%end_time > start_time%'
+      LOOP
+        EXECUTE format('ALTER TABLE booking_requests DROP CONSTRAINT %I', old_constraint);
+      END LOOP;
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid='booking_requests'::regclass
+          AND conname='booking_requests_nonzero_time_range'
+      ) THEN
+        ALTER TABLE booking_requests
+          ADD CONSTRAINT booking_requests_nonzero_time_range CHECK (end_time<>start_time);
+      END IF;
+    END $migration$`);
   await db.query(
     `CREATE INDEX IF NOT EXISTS booking_requests_status_date_idx ON booking_requests(status,requested_date)`,
   );
@@ -152,6 +171,19 @@ async function initialize() {
   await db.query(`CREATE TABLE IF NOT EXISTS app_settings (
     key text PRIMARY KEY, value text NOT NULL, updated_at timestamptz NOT NULL DEFAULT now()
   )`);
+  await db.query(
+    `WITH migration AS (
+       INSERT INTO app_settings(key,value) VALUES ('virtual_rooms_removed','2026-09-05')
+       ON CONFLICT(key) DO NOTHING RETURNING key
+     ), cancelled AS (
+       UPDATE reservations SET status='cancelled',updated_at=now()
+       WHERE status='reserved' AND room_id IN (SELECT id FROM rooms WHERE kind='virtual')
+         AND EXISTS (SELECT 1 FROM migration)
+       RETURNING id
+     )
+     UPDATE rooms SET active=false
+     WHERE kind='virtual' AND active=true AND EXISTS (SELECT 1 FROM migration)`,
+  );
   await db.query(`CREATE TABLE IF NOT EXISTS development_team (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(), name text UNIQUE NOT NULL, role text NOT NULL,
     email text NOT NULL DEFAULT '', phone text NOT NULL DEFAULT '', profile_url text NOT NULL DEFAULT '',
@@ -293,13 +325,16 @@ async function initialize() {
     `UPDATE roles SET color='#a78bfa' WHERE name='ADM' AND color='#d97706'`,
   );
   await db.query(
-    `INSERT INTO shifts(name,start_time,end_time) VALUES ('Manhã','08:00','14:20'),('Tarde','14:40','21:00'),('Diurno','08:00','17:00'),('Dia todo','08:00','21:00') ON CONFLICT(name) DO NOTHING`,
+    `INSERT INTO shifts(name,start_time,end_time) VALUES ('Manhã','08:00','14:20'),('Tarde','14:40','21:00'),('Extra','21:00','07:00'),('Diurno','08:00','17:00'),('Dia todo','08:00','21:00') ON CONFLICT(name) DO NOTHING`,
   );
   await db.query(
     `UPDATE shifts SET start_time='08:00',end_time='14:20' WHERE name='Manhã'`,
   );
   await db.query(
     `UPDATE shifts SET start_time='14:20',end_time='21:00' WHERE name='Tarde'`,
+  );
+  await db.query(
+    `UPDATE shifts SET start_time='21:00',end_time='07:00' WHERE name='Extra'`,
   );
   await db.query(
     `INSERT INTO development_team(name,role,display_order) VALUES
@@ -407,8 +442,7 @@ async function ensurePreviewTestData(db: NeonQueryFunction<false, false>) {
       ('Sala de Treinamento 01','Anexo SAC, térreo','physical',24,'Projetor, quadro e videoconferência','Disponível',24,12,18),
       ('Sala de Treinamento 02','Anexo SAC, térreo','physical',18,'TV, quadro e webcam','Disponível',18,9,12),
       ('Sala Híbrida','Edifício principal, 1º andar','physical',12,'Videoconferência, TV e quadro','Disponível',12,6,8),
-      ('Laboratório de Informática','Edifício principal, 2º andar','physical',20,'Projetor e computadores','Disponível',20,10,20),
-      ('Sala Virtual Teams','Online','virtual',100,'Microsoft Teams','Não se aplica',0,0,0)
+      ('Laboratório de Informática','Edifício principal, 2º andar','physical',20,'Projetor e computadores','Disponível',20,10,20)
      RETURNING id,name`,
   );
 
@@ -418,7 +452,6 @@ async function ensurePreviewTestData(db: NeonQueryFunction<false, false>) {
     [2, 0, "14:20", "17:00", "Oficina de produto"],
     [0, 1, "08:00", "14:20", "Capacitação da equipe"],
     [3, 1, "14:20", "18:00", "Laboratório prático"],
-    [4, 2, "09:00", "11:00", "Encontro remoto"],
     [2, 3, "21:00", "23:30", "Manutenção programada"],
     [1, 4, "14:20", "21:00", "Planejamento semanal"],
   ] as const;

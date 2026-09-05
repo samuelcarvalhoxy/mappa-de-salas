@@ -36,7 +36,7 @@ export type Room = {
   id: string;
   name: string;
   location: string;
-  kind: "physical" | "virtual" | "other";
+  kind: "physical" | "other";
   capacity: number;
   resources: string;
   networkStatus: string;

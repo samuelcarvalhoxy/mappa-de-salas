@@ -9,8 +9,11 @@ import {
 import { PERMISSIONS, type Permission } from "@/lib/types";
 import { canManagePermissionChanges } from "@/lib/permission-policy";
 import {
+  isBookableBusinessDate,
+  isBookingStartInPast,
   isValidDate,
   isValidTimeRange,
+  reservationTimestampStrings,
 } from "@/lib/booking-validation";
 import {
   notifyAnyRoomRequesters,
@@ -19,9 +22,14 @@ import {
 } from "@/lib/push";
 import { handleFacilityAction } from "@/lib/action-handlers/facilities";
 import { handleNotificationAction } from "@/lib/action-handlers/notifications";
+import { handleBulkBookingAction } from "@/lib/action-handlers/bulk-bookings";
+import {
+  estimateResponseMinutes,
+  responseDurationLabel,
+} from "@/lib/request-estimate";
 
-function fail(error: string, status = 400) {
-  return NextResponse.json({ error }, { status });
+function fail(error: string, status = 400, code?: string) {
+  return NextResponse.json({ error, ...(code ? { code } : {}) }, { status });
 }
 
 function validPermissions(value: unknown): Permission[] {
@@ -71,13 +79,63 @@ function requestFields(body: Record<string, unknown>) {
   };
 }
 
-function validRequestFields(fields: ReturnType<typeof requestFields>) {
+function validRequestFields(
+  fields: ReturnType<typeof requestFields>,
+  requireFuture = true,
+) {
   return (
     isValidDate(fields.requestedDate) &&
     isValidTimeRange(fields.startTime, fields.endTime) &&
-    fields.requestedDate >= todayInBahia() &&
+    (!requireFuture || fields.requestedDate >= todayInBahia()) &&
     fields.reason.length >= 3
   );
+}
+
+function scheduleRuleFailure(date: string, startTime: string) {
+  if (!isBookableBusinessDate(date))
+    return fail(
+      "Domingos não são dias disponíveis para agendamento.",
+      400,
+      "SUNDAY_NOT_BOOKABLE",
+    );
+  if (isBookingStartInPast(date, startTime))
+    return fail(
+      "Esse horário já passou. Escolha uma data e um horário futuros.",
+      400,
+      "BOOKING_IN_PAST",
+    );
+  return null;
+}
+
+async function requestResponseEstimate(db: ReturnType<typeof sql>) {
+  const rows = await db.query(
+    `WITH durations AS (
+       SELECT EXTRACT(EPOCH FROM (reviewed_at-created_at))/60.0 minutes
+       FROM booking_requests
+       WHERE reviewed_at IS NOT NULL AND reviewed_at>=created_at
+         AND reviewed_at>=now()-interval '90 days'
+         AND reviewed_at-created_at<=interval '7 days'
+     ), center AS (
+       SELECT avg(minutes) average FROM durations
+     )
+     SELECT count(*)::int sample_size,
+       COALESCE(avg(d.minutes),0)::float8 average_minutes,
+       COALESCE(percentile_cont(0.5) WITHIN GROUP (ORDER BY d.minutes),0)::float8 median_minutes,
+       COALESCE(percentile_cont(0.85) WITHIN GROUP (ORDER BY d.minutes),0)::float8 percentile_85_minutes,
+       COALESCE(stddev_pop(d.minutes),0)::float8 standard_deviation_minutes,
+       COALESCE(avg(abs(d.minutes-c.average)),0)::float8 mean_deviation_minutes
+     FROM durations d CROSS JOIN center c GROUP BY c.average`,
+  );
+  const row = rows[0];
+  if (!row) return null;
+  return estimateResponseMinutes({
+    sampleSize: Number(row.sample_size) || 0,
+    averageMinutes: Number(row.average_minutes) || 0,
+    medianMinutes: Number(row.median_minutes) || 0,
+    percentile85Minutes: Number(row.percentile_85_minutes) || 0,
+    standardDeviationMinutes: Number(row.standard_deviation_minutes) || 0,
+    meanDeviationMinutes: Number(row.mean_deviation_minutes) || 0,
+  });
 }
 
 export async function POST(request: NextRequest) {
@@ -117,6 +175,15 @@ export async function POST(request: NextRequest) {
       audit,
     });
     if (notificationResponse) return notificationResponse;
+    const bulkBookingResponse = await handleBulkBookingAction({
+      action,
+      body,
+      db,
+      actor,
+      requirePermission,
+      audit,
+    });
+    if (bulkBookingResponse) return bulkBookingResponse;
 
     if (action === "request.create") {
       if (!requirePermission("booking.request"))
@@ -124,6 +191,11 @@ export async function POST(request: NextRequest) {
       const fields = requestFields(body);
       if (!validRequestFields(fields))
         return fail("Revise a data, os horários e o motivo da solicitação.");
+      const requestRuleFailure = scheduleRuleFailure(
+        fields.requestedDate,
+        fields.startTime,
+      );
+      if (requestRuleFailure) return requestRuleFailure;
       if (fields.roomId) {
         const room = await db.query(
           `SELECT id FROM rooms WHERE id=$1 AND active=true LIMIT 1`,
@@ -148,20 +220,36 @@ export async function POST(request: NextRequest) {
         ],
       );
       await audit(`Solicitação de sala criada para ${fields.requestedDate}`);
-      await notifyPermission("booking.review", {
-        title: urgent ? "Solicitação urgente de sala" : "Nova solicitação de sala",
-        body: `${urgent ? "URGENTE: " : ""}${actor.name} solicitou ${fields.roomId ? "uma sala específica" : "qualquer sala disponível"} para ${fields.requestedDate}.`,
-        url: `/?tab=requests&request=${createdRequest[0].id}`,
-        tag: urgent ? `urgent-request-${createdRequest[0].id}` : "booking-request",
-      });
+      const responseEstimate = await requestResponseEstimate(db);
+      await Promise.all([
+        notifyPermission("booking.review", {
+          title: urgent ? "Solicitação urgente de sala" : "Nova solicitação de sala",
+          body: `${urgent ? "URGENTE: " : ""}${actor.name} solicitou ${fields.roomId ? "uma sala específica" : "qualquer sala disponível"} para ${fields.requestedDate}.`,
+          url: `/?tab=requests&request=${createdRequest[0].id}`,
+          tag: urgent ? `urgent-request-${createdRequest[0].id}` : "booking-request",
+        }),
+        notifyUsers([String(actor.id)], {
+          title: "Solicitação de Sala Realizada",
+          body: responseEstimate
+            ? `Geralmente respondida em até ${responseDurationLabel(responseEstimate)}, com base nas solicitações dos últimos 90 dias.`
+            : "A equipe responsável recebeu sua solicitação e fará a análise.",
+          url: "/?tab=requests",
+          tag: `request-received-${createdRequest[0].id}`,
+        }),
+      ]);
       if (!fields.roomId) {
+        const requestPeriod = reservationTimestampStrings(
+          fields.requestedDate,
+          fields.startTime,
+          fields.endTime,
+        );
         const available = await db.query(
           `SELECT r.name FROM rooms r WHERE r.active=true AND NOT EXISTS (
           SELECT 1 FROM reservations rs WHERE rs.room_id=r.id AND rs.status='reserved'
           AND rs.starts_at<$2::timestamptz AND rs.ends_at>$1::timestamptz) ORDER BY r.name LIMIT 1`,
           [
-            `${fields.requestedDate}T${fields.startTime}:00-03:00`,
-            `${fields.requestedDate}T${fields.endTime}:00-03:00`,
+            requestPeriod.startsAt,
+            requestPeriod.endsAt,
           ],
         );
         if (available.length)
@@ -179,6 +267,11 @@ export async function POST(request: NextRequest) {
       const fields = requestFields(body);
       if (!requestId || !validRequestFields(fields))
         return fail("Revise a sala, a data, os horários e o motivo.");
+      const updateRuleFailure = scheduleRuleFailure(
+        fields.requestedDate,
+        fields.startTime,
+      );
+      if (updateRuleFailure) return updateRuleFailure;
       if (fields.roomId) {
         const room = await db.query(
           `SELECT id FROM rooms WHERE id=$1 AND active=true LIMIT 1`,
@@ -205,7 +298,11 @@ export async function POST(request: NextRequest) {
         ],
       );
       if (!updated.length)
-        return fail("A solicitação não está mais pendente.", 409);
+        return fail(
+          "A solicitação não está mais pendente.",
+          409,
+          "REQUEST_ALREADY_REVIEWED",
+        );
       await audit(`Solicitação de sala editada para ${fields.requestedDate}`);
       await notifyUsers([String(updated[0].requester_id)], {
         title: "Solicitação atualizada",
@@ -225,15 +322,26 @@ export async function POST(request: NextRequest) {
       if (
         !requestId ||
         !["approved", "rejected"].includes(decision) ||
-        !validRequestFields(fields)
+        !validRequestFields(fields, decision === "approved")
       )
         return fail("Revise os dados e informe uma decisão válida.");
+      if (decision === "approved") {
+        const reviewRuleFailure = scheduleRuleFailure(
+          fields.requestedDate,
+          fields.startTime,
+        );
+        if (reviewRuleFailure) return reviewRuleFailure;
+      }
       const pending = await db.query(
         `SELECT requester_id FROM booking_requests WHERE id=$1 AND status='pending' LIMIT 1`,
         [requestId],
       );
       if (!pending.length)
-        return fail("A solicitação não está mais pendente.", 409);
+        return fail(
+          "A solicitação não está mais pendente.",
+          409,
+          "REQUEST_ALREADY_REVIEWED",
+        );
       if (decision === "rejected") {
         const rejected = await db.query(
           `UPDATE booking_requests SET room_id=$1,reason=$2,requested_date=$3::date,start_time=$4,end_time=$5,
@@ -254,7 +362,11 @@ export async function POST(request: NextRequest) {
           ],
         );
         if (!rejected.length)
-          return fail("A solicitação não está mais pendente.", 409);
+          return fail(
+            "A solicitação não está mais pendente.",
+            409,
+            "REQUEST_ALREADY_REVIEWED",
+          );
         await audit(`Solicitação de ${fields.requestedDate} rejeitada`);
         await notifyUsers([String(pending[0].requester_id)], {
           title: "Solicitação analisada",
@@ -270,8 +382,11 @@ export async function POST(request: NextRequest) {
           [fields.roomId],
         );
         if (!room.length) return fail("Sala não encontrada ou inativa.", 404);
-        const startsAt = `${fields.requestedDate}T${fields.startTime}:00-03:00`;
-        const endsAt = `${fields.requestedDate}T${fields.endTime}:00-03:00`;
+        const { startsAt, endsAt } = reservationTimestampStrings(
+          fields.requestedDate,
+          fields.startTime,
+          fields.endTime,
+        );
         const confirmReplacement = body.confirmReplacement === true;
         const approved = await db.query(
           `WITH conflicts AS (
@@ -316,7 +431,11 @@ export async function POST(request: NextRequest) {
         if (conflictCount && !confirmReplacement)
           return replacementConfirmationRequired(conflictCount);
         if (!Number(approved[0]?.approved_count))
-          return fail("A solicitação não está mais pendente.", 409);
+          return fail(
+            "A solicitação não está mais pendente.",
+            409,
+            "REQUEST_ALREADY_REVIEWED",
+          );
         await audit(
           `Solicitação de ${fields.requestedDate} aprovada e convertida em reserva. ${Number(approved[0].displaced_count) || 0} reserva(s) anterior(es) substituída(s)`,
         );
@@ -374,13 +493,14 @@ export async function POST(request: NextRequest) {
       const canAll = requirePermission("booking.create_all");
       if (!canAll && !requirePermission("booking.create_own"))
         return fail("Seu perfil não pode criar reservas.", 403);
-      const dates: string[] = Array.isArray(body.dates)
+      const requestedDates: string[] = Array.isArray(body.dates)
         ? Array.from(
             new Set<string>(
               (body.dates as unknown[]).map((value) => String(value)),
             ),
           )
         : [];
+      const dates = requestedDates.filter(isBookableBusinessDate);
       const roomId = String(body.roomId || "");
       const targetUser = canAll && body.userId ? String(body.userId) : actor.id;
       const startTime = String(body.startTime || "08:00");
@@ -388,17 +508,32 @@ export async function POST(request: NextRequest) {
       const reason = String(body.reason || "").trim();
       const confirmReplacement = body.confirmReplacement === true;
       if (
-        !dates.length ||
-        dates.length > 30 ||
+        !requestedDates.length ||
+        requestedDates.length > 30 ||
         !roomId ||
         reason.length < 3 ||
         !isValidTimeRange(startTime, endTime) ||
-        dates.some(
+        requestedDates.some(
           (date) => !isValidDate(date) || date < todayInBahia(),
         )
       )
         return fail(
           "Revise datas, sala, horários e motivo. O período máximo é de 30 dias.",
+        );
+      if (!dates.length)
+        return fail(
+          "Domingos não são dias disponíveis para agendamento.",
+          400,
+          "SUNDAY_NOT_BOOKABLE",
+        );
+      const pastDate = dates.find((date) =>
+        isBookingStartInPast(date, startTime),
+      );
+      if (pastDate)
+        return fail(
+          "Esse horário já passou. Escolha uma data e um horário futuros.",
+          400,
+          "BOOKING_IN_PAST",
         );
       const [room, target] = await Promise.all([
         db.query(`SELECT id,name FROM rooms WHERE id=$1 AND active=true LIMIT 1`, [
@@ -416,7 +551,7 @@ export async function POST(request: NextRequest) {
           SELECT value::date booking_date FROM unnest($1::text[]) AS requested_dates(value)
         ), periods AS (
           SELECT (booking_date::text||'T'||$4||':00-03:00')::timestamptz starts_at,
-                 (booking_date::text||'T'||$5||':00-03:00')::timestamptz ends_at FROM requested
+                 ((booking_date + CASE WHEN $5<=$4 THEN 1 ELSE 0 END)::text||'T'||$5||':00-03:00')::timestamptz ends_at FROM requested
         ), conflicts AS (
           SELECT DISTINCT rs.id,rs.user_id FROM reservations rs JOIN periods p
             ON rs.starts_at<p.ends_at AND rs.ends_at>p.starts_at
@@ -457,7 +592,7 @@ export async function POST(request: NextRequest) {
       if (!Number(created[0]?.created_count))
         return fail("Nenhuma reserva foi criada.", 409);
       await audit(
-        `${Number(created[0]?.created_count) || dates.length} reserva(s) criada(s). ${Number(created[0]?.displaced_count) || 0} reserva(s) anterior(es) substituída(s)`,
+        `${Number(created[0]?.created_count) || dates.length} reserva(s) criada(s). ${requestedDates.length - dates.length} domingo(s) ignorado(s). ${Number(created[0]?.displaced_count) || 0} reserva(s) anterior(es) substituída(s)`,
       );
       const displacedUserIds = Array.isArray(created[0]?.displaced_user_ids)
         ? created[0].displaced_user_ids
@@ -493,6 +628,11 @@ export async function POST(request: NextRequest) {
         !isValidTimeRange(startTime, endTime)
       )
         return fail("Revise a data, sala, horários e motivo da reserva.");
+      const bookingUpdateRuleFailure = scheduleRuleFailure(
+        requestedDate,
+        startTime,
+      );
+      if (bookingUpdateRuleFailure) return bookingUpdateRuleFailure;
       const existing = await db.query(
         `SELECT user_id,series_id FROM reservations WHERE id=$1 AND status='reserved' LIMIT 1`,
         [id],
@@ -517,8 +657,11 @@ export async function POST(request: NextRequest) {
       ]);
       if (!room.length) return fail("Sala não encontrada ou inativa.", 404);
       if (!target.length) return fail("Usuário não encontrado ou inativo.", 404);
-      const startsAt = `${requestedDate}T${startTime}:00-03:00`;
-      const endsAt = `${requestedDate}T${endTime}:00-03:00`;
+      const { startsAt, endsAt } = reservationTimestampStrings(
+        requestedDate,
+        startTime,
+        endTime,
+      );
       const updated = await db.query(
         `WITH conflicts AS (
           SELECT id,user_id FROM reservations rs
@@ -581,13 +724,14 @@ export async function POST(request: NextRequest) {
         });
     } else if (action === "booking.update_series") {
       const seriesId = String(body.seriesId || "");
-      const dates: string[] = Array.isArray(body.dates)
+      const requestedDates: string[] = Array.isArray(body.dates)
         ? Array.from(
             new Set<string>(
               (body.dates as unknown[]).map((value) => String(value)),
             ),
           )
         : [];
+      const dates = requestedDates.filter(isBookableBusinessDate);
       const roomId = String(body.roomId || "");
       const startTime = String(body.startTime || "08:00");
       const endTime = String(body.endTime || "14:20");
@@ -595,17 +739,32 @@ export async function POST(request: NextRequest) {
       const confirmReplacement = body.confirmReplacement === true;
       if (
         !seriesId ||
-        !dates.length ||
-        dates.length > 30 ||
+        !requestedDates.length ||
+        requestedDates.length > 30 ||
         !roomId ||
         reason.length < 3 ||
         !isValidTimeRange(startTime, endTime) ||
-        dates.some(
+        requestedDates.some(
           (date) => !isValidDate(date) || date < todayInBahia(),
         )
       )
         return fail(
           "Revise datas, sala, horários e motivo. O período máximo é de 30 dias.",
+        );
+      if (!dates.length)
+        return fail(
+          "Domingos não são dias disponíveis para agendamento.",
+          400,
+          "SUNDAY_NOT_BOOKABLE",
+        );
+      const pastSeriesDate = dates.find((date) =>
+        isBookingStartInPast(date, startTime),
+      );
+      if (pastSeriesDate)
+        return fail(
+          "Esse horário já passou. Escolha uma data e um horário futuros.",
+          400,
+          "BOOKING_IN_PAST",
         );
       const existing = await db.query(
         `SELECT user_id FROM reservations WHERE series_id=$1 AND status='reserved' AND ends_at>now() ORDER BY starts_at LIMIT 1`,
@@ -637,7 +796,7 @@ export async function POST(request: NextRequest) {
           SELECT value::date booking_date FROM unnest($1::text[]) AS requested_dates(value)
         ), periods AS (
           SELECT (booking_date::text||'T'||$5||':00-03:00')::timestamptz starts_at,
-                 (booking_date::text||'T'||$6||':00-03:00')::timestamptz ends_at FROM requested
+                 ((booking_date + CASE WHEN $6<=$5 THEN 1 ELSE 0 END)::text||'T'||$6||':00-03:00')::timestamptz ends_at FROM requested
         ), conflicts AS (
           SELECT DISTINCT rs.id,rs.user_id FROM reservations rs JOIN periods p
             ON rs.starts_at<p.ends_at AND rs.ends_at>p.starts_at

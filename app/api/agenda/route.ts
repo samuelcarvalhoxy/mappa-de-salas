@@ -12,7 +12,17 @@ const querySchema = z
   })
   .refine(({ from, to }) => from <= to, {
     message: "A data final deve ser igual ou posterior à data inicial.",
-  });
+  })
+  .refine(
+    ({ from, to }) =>
+      (new Date(`${to}T12:00:00Z`).getTime() -
+        new Date(`${from}T12:00:00Z`).getTime()) /
+        86_400_000 <=
+      92,
+    {
+      message: "Consulte no máximo 93 dias por vez.",
+    },
+  );
 
 export async function GET(request: NextRequest) {
   await ensureDatabase();
@@ -48,7 +58,8 @@ export async function GET(request: NextRequest) {
     JOIN rooms r ON r.id=rs.room_id
     JOIN users u ON u.id=rs.user_id
     JOIN users c ON c.id=rs.created_by
-    WHERE rs.starts_at < (($2::date + 1)::timestamp AT TIME ZONE 'America/Bahia')
+    WHERE r.kind<>'virtual'
+      AND rs.starts_at < (($2::date + 1)::timestamp AT TIME ZONE 'America/Bahia')
       AND rs.ends_at >= ($1::date::timestamp AT TIME ZONE 'America/Bahia')
     ORDER BY rs.starts_at,rs.ends_at`,
     [parsed.data.from, parsed.data.to],

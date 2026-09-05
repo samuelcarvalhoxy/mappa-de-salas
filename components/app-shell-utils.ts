@@ -98,7 +98,10 @@ export function reservationShift(state: AppState, reservation: Reservation) {
   const start = time(reservation.startsAt);
   return (
     state.shifts.find(
-      (shift) => start >= shift.startTime && start <= shift.endTime,
+      (shift) =>
+        shift.endTime <= shift.startTime
+          ? start >= shift.startTime || start < shift.endTime
+          : start >= shift.startTime && start < shift.endTime,
     )?.name || "Fora dos turnos"
   );
 }

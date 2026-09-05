@@ -3,7 +3,9 @@
 import {
   FormEvent,
   useCallback,
+  useDeferredValue,
   useEffect,
+  useId,
   useMemo,
   useRef,
   useState,
@@ -47,7 +49,6 @@ import {
   Table2,
   Trash2,
   Users,
-  Video,
   Wifi,
   Wrench,
   X,
@@ -82,10 +83,24 @@ import {
   MAP_SHIFTS,
   mapShiftBounds,
   mapShiftForNow,
+  type MapShift,
 } from "@/lib/map-shifts";
+import {
+  businessDatesBetween,
+  isSundayDate,
+  nextBusinessDate,
+  startOfWeekMonday,
+} from "@/lib/calendar-utils";
+import { isBookingStartInPast } from "@/lib/booking-validation";
+import type {
+  BulkCancellationFilters,
+  BulkCancellationPreview,
+} from "@/lib/bulk-cancellation";
 import { useInstallPrompt, usePushNotifications } from "./pwa-hooks";
 import { Brand, Empty, Summary } from "./app-shell-parts";
 import { RoomMapSpreadsheet } from "./room-map-spreadsheet";
+import { AlternateDatePicker } from "./alternate-date-picker";
+import { BulkCancelModal } from "./bulk-cancel-modal";
 import {
   addDays,
   BLUE_ORANGE_PALETTE,
@@ -155,6 +170,42 @@ type StatsData = {
   }[];
 };
 
+type ApiPayload = {
+  error?: string;
+  code?: string;
+  conflictCount?: number;
+  [key: string]: unknown;
+};
+
+class ApiError extends Error {
+  status: number;
+  code: string;
+  payload: ApiPayload;
+
+  constructor(message: string, status: number, payload: ApiPayload) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+    this.code = String(payload.code || "");
+    this.payload = payload;
+  }
+}
+
+type ScheduleSeed = {
+  room?: Room;
+  date?: string;
+  startTime?: string;
+  endTime?: string;
+};
+
+function normalizedSearch(value: string) {
+  return value
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .trim()
+    .toLocaleLowerCase("pt-BR");
+}
+
 async function api(path: string, body?: Record<string, unknown>) {
   const response = await fetch(
     path,
@@ -166,8 +217,13 @@ async function api(path: string, body?: Record<string, unknown>) {
         }
       : { cache: "no-store" },
   );
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(data.error || "Não foi possível concluir.");
+  const data = (await response.json().catch(() => ({}))) as ApiPayload;
+  if (!response.ok)
+    throw new ApiError(
+      data.error || "Não foi possível concluir.",
+      response.status,
+      data,
+    );
   return data;
 }
 
@@ -176,6 +232,11 @@ export function AppShell() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [toast, setToast] = useState("");
+  const [lastSyncAt, setLastSyncAt] = useState<Date | null>(null);
+  const [syncStatus, setSyncStatus] = useState<
+    "syncing" | "ready" | "error"
+  >("syncing");
+  const [syncTick, setSyncTick] = useState(() => Date.now());
   const [dark, setDark] = useState(false);
   const [palette, setPalette] = useState<PaletteChoice>(DEFAULT_PALETTE);
   const [activeTab, setActiveTab] = useState("map");
@@ -185,6 +246,7 @@ export function AppShell() {
     null,
   );
   const actionInFlight = useRef(false);
+  const backgroundSyncInFlight = useRef(false);
   const install = useInstallPrompt();
   const showError = useCallback((message: string) => {
     setToast("");
@@ -192,23 +254,46 @@ export function AppShell() {
   }, []);
   const notifications = usePushNotifications(state.pushPublicKey, showError);
 
-  const refresh = useCallback(async (quiet = false) => {
+  const refresh = useCallback(async (quiet = false, syncOnly = false) => {
+    if (syncOnly && backgroundSyncInFlight.current) return;
+    if (syncOnly) backgroundSyncInFlight.current = true;
+    setSyncStatus("syncing");
     try {
-      const next = await api("/api/state");
-      setState(next);
+      const payload = (await api(
+        syncOnly ? "/api/state?mode=sync" : "/api/state",
+      )) as Partial<AppState> & { partial?: boolean };
+      setState((current) =>
+        payload.partial
+          ? ({ ...current, ...payload } as AppState)
+          : (payload as AppState),
+      );
       setError("");
+      const syncedAt = new Date();
+      setLastSyncAt(syncedAt);
+      setSyncTick(syncedAt.getTime());
+      setSyncStatus("ready");
     } catch (e) {
+      setSyncStatus("error");
       if (!quiet)
         setError(e instanceof Error ? e.message : "Falha de conexão.");
     } finally {
+      if (syncOnly) backgroundSyncInFlight.current = false;
       setLoading(false);
     }
   }, []);
 
   useEffect(() => {
     const initial = window.setTimeout(() => refresh(), 0);
+    let lastVisibilityRefresh = 0;
     const refreshWhenVisible = () => {
-      if (document.visibilityState === "visible") void refresh(true);
+      const now = Date.now();
+      if (
+        document.visibilityState === "visible" &&
+        now - lastVisibilityRefresh >= 10_000
+      ) {
+        lastVisibilityRefresh = now;
+        void refresh(true, true);
+      }
     };
     const timer = window.setInterval(refreshWhenVisible, 60_000);
     window.addEventListener("focus", refreshWhenVisible);
@@ -220,6 +305,10 @@ export function AppShell() {
       document.removeEventListener("visibilitychange", refreshWhenVisible);
     };
   }, [refresh]);
+  useEffect(() => {
+    const timer = window.setInterval(() => setSyncTick(Date.now()), 30_000);
+    return () => window.clearInterval(timer);
+  }, []);
   useEffect(() => {
     document.documentElement.dataset.theme = dark ? "dark" : "light";
     document.documentElement.style.setProperty(
@@ -259,6 +348,11 @@ export function AppShell() {
     return () => clearTimeout(timer);
   }, [toast]);
   useEffect(() => {
+    if (!error) return;
+    const timer = window.setTimeout(() => setError(""), 5200);
+    return () => window.clearTimeout(timer);
+  }, [error]);
+  useEffect(() => {
     const currentUser = state.currentUser;
     if (!currentUser) return;
     const params = new URLSearchParams(window.location.search);
@@ -287,17 +381,65 @@ export function AppShell() {
     setError("");
     setToast("");
     try {
-      await api("/api/action", body);
+      try {
+        await api("/api/action", body);
+      } catch (reason) {
+        if (
+          reason instanceof ApiError &&
+          reason.code === "RESERVATION_REPLACEMENT_CONFIRMATION_REQUIRED" &&
+          body.confirmReplacement !== true &&
+          window.confirm(
+            `${Number(reason.payload.conflictCount) || 1} reserva(s) coincidem com este horário. Deseja realmente substituí-las?`,
+          )
+        ) {
+          await api("/api/action", { ...body, confirmReplacement: true });
+        } else {
+          throw reason;
+        }
+      }
       setModal(null);
       setError("");
       setToast(success);
       await refresh(true);
     } catch (e) {
+      if (e instanceof ApiError && e.code === "REQUEST_ALREADY_REVIEWED") {
+        setModal(null);
+        setError("");
+        setToast("A solicitação já foi analisada. A lista foi atualizada.");
+        await refresh(true);
+        return;
+      }
       setToast("");
       setError(e instanceof Error ? e.message : "Falha na operação.");
     } finally {
       actionInFlight.current = false;
     }
+  };
+
+  const previewBulkCancellation = async (
+    filters: BulkCancellationFilters,
+  ) => {
+    const payload = await api("/api/action", {
+      action: "booking.bulk_cancel.preview",
+      ...filters,
+    });
+    return payload.preview as BulkCancellationPreview;
+  };
+
+  const confirmBulkCancellation = async (
+    filters: BulkCancellationFilters,
+    expectedCount: number,
+  ) => {
+    await api("/api/action", {
+      action: "booking.bulk_cancel",
+      ...filters,
+      expectedCount,
+      confirmed: true,
+    });
+    setModal(null);
+    setError("");
+    setToast(`${expectedCount} reserva(s) cancelada(s).`);
+    await refresh(true);
   };
 
   if (loading)
@@ -322,9 +464,20 @@ export function AppShell() {
   const unreadNotifications = state.notifications.filter(
     (notification) => !notification.readAt,
   ).length;
+  const secondsSinceSync = lastSyncAt
+    ? Math.max(0, Math.floor((syncTick - lastSyncAt.getTime()) / 1000))
+    : 0;
+  const syncLabel =
+    syncStatus === "syncing"
+      ? "Sincronizando..."
+      : syncStatus === "error"
+        ? "Falha ao sincronizar"
+        : secondsSinceSync < 45
+          ? "Sincronizado agora"
+          : `Sincronizado há ${Math.max(1, Math.floor(secondsSinceSync / 60))} min`;
   const nav = [
-    { id: "map", label: "Mapa de salas", icon: LayoutGrid, show: true },
-    { id: "calendar", label: "Agenda", icon: CalendarDays, show: true },
+    { id: "map", label: "Mapa", icon: LayoutGrid, group: "GERAL", show: true },
+    { id: "calendar", label: "Agenda", icon: CalendarDays, group: "GERAL", show: true },
     {
       id: "requests",
       label:
@@ -332,53 +485,63 @@ export function AppShell() {
           ? `Solicitações (${pendingRequests})`
           : "Solicitações",
       icon: ClipboardList,
+      group: "GERAL",
       show: canRequest || can("booking.review"),
     },
-    { id: "rooms", label: "Salas", icon: DoorOpen, show: can("room.manage") },
+    { id: "rooms", label: "Salas", icon: DoorOpen, group: "GESTÃO", show: can("room.manage") },
     {
       id: "users",
       label: "Usuários",
       icon: Users,
+      group: "GESTÃO",
       show: can("user.manage") || can("user.delete") || can("security.reset"),
     },
     {
       id: "roles",
-      label: "Perfis e acessos",
+      label: "Perfis",
       icon: ShieldCheck,
+      group: "GESTÃO",
       show: can("role.manage"),
     },
     {
       id: "stats",
       label: "Estatísticas",
       icon: BarChart3,
+      group: "GESTÃO",
       show: can("stats.view"),
     },
     {
       id: "notifications-admin",
-      label: "Central de notificações",
+      label: "Central",
       icon: Bell,
+      group: "RELATÓRIOS",
       show: can("notification.send"),
     },
     {
       id: "access-report",
-      label: "Relatório de acessos",
+      label: "Acessos",
       icon: Users,
+      group: "RELATÓRIOS",
       show: can("access.report"),
     },
-    { id: "audit", label: "Histórico", icon: History, show: can("audit.view") },
+    { id: "audit", label: "Histórico", icon: History, group: "RELATÓRIOS", show: can("audit.view") },
     {
       id: "development",
-      label: "Equipe de desenvolvimento",
+      label: "Equipe",
       icon: Code2,
+      group: "SISTEMA",
       show: true,
     },
   ].filter((item) => item.show);
+  const navGroups = ["GERAL", "GESTÃO", "RELATÓRIOS", "SISTEMA"]
+    .map((group) => ({ group, items: nav.filter((item) => item.group === group) }))
+    .filter(({ items }) => items.length > 0);
 
   const titles: Record<string, [string, string]> = {
     map: ["Mapa de salas", "Disponibilidade atual e próximas reservas"],
     calendar: ["Agenda", "Reservas por dia e período"],
     requests: ["Solicitações", "Pedidos de sala aguardando análise e decisões"],
-    rooms: ["Salas", "Ambientes físicos, virtuais e outras localidades"],
+    rooms: ["Salas", "Ambientes físicos e outras localidades presenciais"],
     users: ["Usuários", "Pessoas e níveis de acesso"],
     roles: ["Perfis e acessos", "Permissões sob medida para cada equipe"],
     stats: ["Estatísticas", "Padrões de utilização por pessoa ou sala"],
@@ -404,24 +567,32 @@ export function AppShell() {
           <Brand />
           <button
             className="icon-btn mobile-only"
+            type="button"
+            aria-label="Fechar menu"
             onClick={() => setSidebar(false)}
           >
             <X size={20} />
           </button>
         </div>
         <nav>
-          {nav.map(({ id, label, icon: Icon }) => (
-            <button
-              key={id}
-              className={activeTab === id ? "active" : ""}
-              onClick={() => {
-                setActiveTab(id);
-                setSidebar(false);
-              }}
-            >
-              <Icon size={19} />
-              <span>{label}</span>
-            </button>
+          {navGroups.map(({ group, items }) => (
+            <div className="sidebar-group" key={group}>
+              <span className="sidebar-group-label">{group}</span>
+              {items.map(({ id, label, icon: Icon }) => (
+                <button
+                  type="button"
+                  key={id}
+                  className={activeTab === id ? "active" : ""}
+                  onClick={() => {
+                    setActiveTab(id);
+                    setSidebar(false);
+                  }}
+                >
+                  <Icon size={19} />
+                  <span>{label}</span>
+                </button>
+              ))}
+            </div>
           ))}
         </nav>
         <div className="sidebar-foot">
@@ -454,6 +625,7 @@ export function AppShell() {
             <button
               className="icon-btn"
               title="Sair"
+              aria-label="Sair"
               onClick={async () => {
                 await api("/api/auth", { action: "logout" });
                 refresh();
@@ -467,6 +639,8 @@ export function AppShell() {
       {sidebar && (
         <button
           className="backdrop mobile-only"
+          type="button"
+          aria-label="Fechar menu"
           onClick={() => setSidebar(false)}
         />
       )}
@@ -474,6 +648,8 @@ export function AppShell() {
         <header className="topbar">
           <button
             className="icon-btn mobile-only"
+            type="button"
+            aria-label="Abrir menu"
             onClick={() => setSidebar(true)}
           >
             <Menu size={21} />
@@ -483,9 +659,14 @@ export function AppShell() {
             <p>{(titles[activeTab] || titles.map)[1]}</p>
           </div>
           <div className="top-actions">
-            <div className="sync">
-              <span /> Sincronizado agora
-            </div>
+            <button
+              className={`sync ${syncStatus}`}
+              type="button"
+              title="Atualizar dados agora"
+              onClick={() => void refresh(false, true)}
+            >
+              <span /> {syncLabel}
+            </button>
             {state.pushPublicKey &&
               (notifications.permission !== "granted" ||
                 notifications.status === "error") && (
@@ -505,6 +686,7 @@ export function AppShell() {
             <button
               className="icon-btn notification-center-button"
               title="Abrir notificações"
+              aria-label="Abrir notificações"
               onClick={() => setModal({ type: "notifications" })}
             >
               <Bell size={18} />
@@ -523,6 +705,7 @@ export function AppShell() {
             <button
               className="icon-btn"
               title="Alternar tema"
+              aria-label="Alternar tema"
               onClick={() =>
                 setDark((value) => {
                   const next = !value;
@@ -539,6 +722,7 @@ export function AppShell() {
             <button
               className="icon-btn"
               title="Personalizar cores"
+              aria-label="Personalizar cores"
               onClick={() => setModal({ type: "palette" })}
             >
               <Settings2 size={19} />
@@ -547,9 +731,13 @@ export function AppShell() {
         </header>
         <div className="content">
           {error && (
-            <div className="alert global-alert" role="alert">
+            <div className="alert global-alert error-shake" role="alert">
               <span>{error}</span>
-              <button onClick={() => setError("")}>
+              <button
+                type="button"
+                aria-label="Fechar mensagem de erro"
+                onClick={() => setError("")}
+              >
                 <X size={16} />
               </button>
             </div>
@@ -561,13 +749,29 @@ export function AppShell() {
               onSelectedDateChange={setMapDate}
               canBookDirectly={canBookDirectly}
               canRequest={canRequest}
-              onSchedule={(room) =>
+              canManageReservations={can("booking.manage_all")}
+              onSchedule={(seed) =>
                 setModal({
                   type: canBookDirectly ? "booking" : "request",
-                  data: room,
+                  data: seed,
                 })
               }
               onInspect={(room) => setModal({ type: "room-life", data: room })}
+              onEdit={(reservation) =>
+                setModal({ type: "booking-edit", data: reservation })
+              }
+              onCancel={(reservation) => {
+                if (
+                  window.confirm(
+                    `Cancelar a reserva de ${reservation.userName}, das ${time(reservation.startsAt)} às ${time(reservation.endsAt)}?`,
+                  )
+                )
+                  void act(
+                    { action: "booking.cancel", id: reservation.id },
+                    "Reserva cancelada.",
+                  );
+              }}
+              onBulkCancel={() => setModal({ type: "bulk-cancel" })}
               onOpenAgenda={() => setActiveTab("calendar")}
             />
           )}
@@ -584,18 +788,31 @@ export function AppShell() {
               onEdit={(reservation) =>
                 setModal({ type: "booking-edit", data: reservation })
               }
-              onCancel={(r) =>
-                act(
-                  { action: "booking.cancel", id: r.id },
-                  "Reserva cancelada.",
+              onCancel={(reservation) => {
+                if (
+                  window.confirm(
+                    `Cancelar a reserva de ${reservation.userName}, das ${time(reservation.startsAt)} às ${time(reservation.endsAt)}?`,
+                  )
                 )
-              }
-              onCancelSeries={(r) =>
-                act(
-                  { action: "booking.cancel_series", seriesId: r.seriesId },
-                  "Período de reservas cancelado.",
+                  void act(
+                    { action: "booking.cancel", id: reservation.id },
+                    "Reserva cancelada.",
+                  );
+              }}
+              onCancelSeries={(reservation) => {
+                if (
+                  window.confirm(
+                    "Cancelar todas as reservas atuais e futuras deste período? O histórico será preservado.",
+                  )
                 )
-              }
+                  void act(
+                    {
+                      action: "booking.cancel_series",
+                      seriesId: reservation.seriesId,
+                    },
+                    "Período de reservas cancelado.",
+                  );
+              }}
               onCheckout={(r) => {
                 if (
                   window.confirm(
@@ -607,6 +824,7 @@ export function AppShell() {
                     "Utilização finalizada e sala liberada.",
                   );
               }}
+              onBulkCancel={() => setModal({ type: "bulk-cancel" })}
             />
           )}
           {activeTab === "requests" && (
@@ -744,9 +962,14 @@ export function AppShell() {
       </main>
       {modal?.type === "booking" && (
         <BookingModal
-          room={modal.data as Room | undefined}
+          room={(modal.data as ScheduleSeed | undefined)?.room}
           state={state}
-          initialDate={activeTab === "map" ? mapDate : undefined}
+          initialDate={
+            (modal.data as ScheduleSeed | undefined)?.date ||
+            (activeTab === "map" ? mapDate : undefined)
+          }
+          initialStartTime={(modal.data as ScheduleSeed | undefined)?.startTime}
+          initialEndTime={(modal.data as ScheduleSeed | undefined)?.endTime}
           canAll={can("booking.create_all")}
           onClose={() => setModal(null)}
           onSave={(data) =>
@@ -781,9 +1004,14 @@ export function AppShell() {
       )}
       {modal?.type === "request" && (
         <RequestModal
-          room={modal.data as Room | undefined}
+          room={(modal.data as ScheduleSeed | undefined)?.room}
           state={state}
-          initialDate={activeTab === "map" ? mapDate : undefined}
+          initialDate={
+            (modal.data as ScheduleSeed | undefined)?.date ||
+            (activeTab === "map" ? mapDate : undefined)
+          }
+          initialStartTime={(modal.data as ScheduleSeed | undefined)?.startTime}
+          initialEndTime={(modal.data as ScheduleSeed | undefined)?.endTime}
           onClose={() => setModal(null)}
           onSave={(data) =>
             act(
@@ -823,6 +1051,14 @@ export function AppShell() {
           }
         />
       )}
+      {modal?.type === "bulk-cancel" && (
+        <BulkCancelModal
+          state={state}
+          onClose={() => setModal(null)}
+          onPreview={previewBulkCancellation}
+          onConfirm={confirmBulkCancellation}
+        />
+      )}
       {modal?.type === "room-life" && (
         <RoomLifeModal
           room={modal.data as Room}
@@ -835,7 +1071,7 @@ export function AppShell() {
           onSchedule={(room) =>
             setModal({
               type: canBookDirectly ? "booking" : "request",
-              data: room,
+              data: { room } satisfies ScheduleSeed,
             })
           }
           onReport={(room) => setModal({ type: "issue", data: room })}
@@ -1049,7 +1285,7 @@ function LoginScreen({ onDone }: { onDone: () => void }) {
       });
       if (data.requiresSecuritySetup) {
         const required = Array.isArray(data.questions)
-          ? data.questions
+          ? data.questions.map(String)
           : SECURITY_QUESTIONS;
         setQuestions(required);
         setAnswers(required.map(() => ""));
@@ -1069,10 +1305,13 @@ function LoginScreen({ onDone }: { onDone: () => void }) {
         action: "security_questions",
         username,
       });
-      if (!data.questions?.length)
+      const securityQuestions = Array.isArray(data.questions)
+        ? data.questions.map(String)
+        : [];
+      if (!securityQuestions.length)
         throw new Error("Recuperação não configurada para esse usuário.");
-      setQuestions(data.questions);
-      setAnswers(data.questions.map(() => ""));
+      setQuestions(securityQuestions);
+      setAnswers(securityQuestions.map(() => ""));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Falha.");
     } finally {
@@ -1384,8 +1623,12 @@ function RoomMap({
   onSelectedDateChange,
   canBookDirectly,
   canRequest,
+  canManageReservations,
   onSchedule,
   onInspect,
+  onEdit,
+  onCancel,
+  onBulkCancel,
   onOpenAgenda,
 }: {
   state: AppState;
@@ -1393,11 +1636,16 @@ function RoomMap({
   onSelectedDateChange: (date: string) => void;
   canBookDirectly: boolean;
   canRequest: boolean;
-  onSchedule: (r: Room) => void;
+  canManageReservations: boolean;
+  onSchedule: (seed: ScheduleSeed) => void;
   onInspect: (r: Room) => void;
+  onEdit: (reservation: Reservation) => void;
+  onCancel: (reservation: Reservation) => void;
+  onBulkCancel: () => void;
   onOpenAgenda: () => void;
 }) {
   const [query, setQuery] = useState("");
+  const deferredQuery = useDeferredValue(query);
   const [filter, setFilter] = useState("all");
   const [viewMode, setViewMode] = useState<"cards" | "spreadsheet">("cards");
   const [selectedShiftId, setSelectedShiftId] = useState(() =>
@@ -1418,14 +1666,17 @@ function RoomMap({
     end: shiftEnd,
     endDate: shiftEndDate,
   } = mapShiftBounds(selectedDate, selectedShift);
-  const spreadsheetEndDate = addDays(selectedDate, 4);
+  const spreadsheetStartDate = startOfWeekMonday(selectedDate);
+  const spreadsheetEndDate = addDays(spreadsheetStartDate, 6);
   const spreadsheetExtraEndDate = addDays(spreadsheetEndDate, 1);
+  const loadFromDate =
+    viewMode === "spreadsheet" ? spreadsheetStartDate : selectedDate;
   const loadToDate =
     viewMode === "spreadsheet" ? spreadsheetExtraEndDate : shiftEndDate;
   const reference =
     isToday && now >= shiftStart && now < shiftEnd ? now : shiftStart;
   const referenceIsNow = reference.getTime() === now.getTime();
-  const loadKey = `${viewMode}:${selectedDate}:${loadToDate}:${selectedShift.id}`;
+  const loadKey = `${viewMode}:${loadFromDate}:${loadToDate}:${selectedShift.id}`;
   const dayReady = loadedKey === loadKey;
 
   useEffect(() => {
@@ -1436,10 +1687,14 @@ function RoomMap({
       setDayError("");
       try {
         const data = await api(
-          `/api/agenda?from=${selectedDate}&to=${loadToDate}`,
+          `/api/agenda?from=${loadFromDate}&to=${loadToDate}`,
         );
         if (cancelled) return;
-        setDayReservations(data.reservations || []);
+        setDayReservations(
+          Array.isArray(data.reservations)
+            ? (data.reservations as Reservation[])
+            : [],
+        );
         setLoadedKey(loadKey);
       } catch (error) {
         if (cancelled) return;
@@ -1455,7 +1710,7 @@ function RoomMap({
     return () => {
       cancelled = true;
     };
-  }, [loadKey, selectedDate, loadToDate, reloadDay]);
+  }, [loadFromDate, loadKey, loadToDate, reloadDay]);
 
   const reservations = dayReady ? dayReservations : [];
   const shiftReservationsFor = (roomId: string) =>
@@ -1497,7 +1752,7 @@ function RoomMap({
     if (cursor < shiftEnd) intervals.push({ start: cursor, end: shiftEnd });
     return intervals;
   };
-  const spreadsheetStart = new Date(`${selectedDate}T08:00:00-03:00`);
+  const spreadsheetStart = new Date(`${spreadsheetStartDate}T08:00:00-03:00`);
   const spreadsheetEnd = new Date(
     `${spreadsheetExtraEndDate}T07:00:00-03:00`,
   );
@@ -1521,18 +1776,19 @@ function RoomMap({
         ? !hasReservation
         : filter === "reserved"
           ? hasReservation
-          : room.kind === filter);
-    const searchText = `${room.name} ${room.location}`.toLowerCase();
+          : false);
+    const normalizedQuery = normalizedSearch(deferredQuery);
+    const searchText = normalizedSearch(
+      `${room.name} ${room.location} ${room.resources} ${room.networkStatus}`,
+    );
     const reservationMatches = roomShiftReservations.some((reservation) =>
-      `${reservation.userName} ${reservation.userUsername || ""}`
-        .toLowerCase()
-        .includes(query.trim().toLowerCase()),
+      normalizedSearch(
+        `${reservation.userName} ${reservation.userUsername || ""} ${reservation.reason} ${reservation.creatorName}`,
+      ).includes(normalizedQuery),
     );
     return (
       matchesFilter &&
-      (!query.trim() ||
-        searchText.includes(query.trim().toLowerCase()) ||
-        reservationMatches)
+      (!normalizedQuery || searchText.includes(normalizedQuery) || reservationMatches)
     );
   });
   const free = state.rooms.filter(
@@ -1547,7 +1803,7 @@ function RoomMap({
   const changeDate = (nextDate: string) => {
     if (/^\d{4}-\d{2}-\d{2}$/.test(nextDate)) onSelectedDateChange(nextDate);
   };
-  const navigationStep = viewMode === "spreadsheet" ? 5 : 1;
+  const navigationStep = viewMode === "spreadsheet" ? 7 : 1;
   return (
     <>
       <div className="map-date-bar" aria-busy={dayLoading}>
@@ -1558,14 +1814,14 @@ function RoomMap({
           <div>
             <strong>
               {viewMode === "spreadsheet"
-                ? `${requestDateLabel(selectedDate)} a ${requestDateLabel(spreadsheetEndDate)}`
+                ? `${requestDateLabel(spreadsheetStartDate)} a ${requestDateLabel(spreadsheetEndDate)}`
                 : isToday
                   ? "Hoje"
                   : requestDateLabel(selectedDate)}
             </strong>
             <small>
               {viewMode === "spreadsheet"
-                ? "Mapa de cinco dias com todos os turnos"
+                ? "Semana completa, com domingo na última coluna"
                 : `Status referente ao turno ${selectedShift.name.toLowerCase()}, das ${selectedShift.startTime} às ${selectedShift.endTime}`}
             </small>
           </div>
@@ -1696,7 +1952,7 @@ function RoomMap({
         <div className="search">
           <Search size={18} />
           <input
-            placeholder="Buscar sala, localidade, nome ou usuário"
+            placeholder="Buscar sala, local, pessoa, usuário ou motivo"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
           />
@@ -1706,7 +1962,6 @@ function RoomMap({
             ["all", "Todas"],
             ["free", "Disponíveis"],
             ["reserved", "Reservadas"],
-            ["virtual", "Virtuais"],
           ].map(([id, label]) => (
             <button
               key={id}
@@ -1732,10 +1987,24 @@ function RoomMap({
         />
       ) : viewMode === "spreadsheet" ? (
         <RoomMapSpreadsheet
-          startDate={selectedDate}
+          startDate={spreadsheetStartDate}
           rooms={filtered}
           reservations={reservations}
+          now={state.now}
+          canManage={canManageReservations}
+          canSchedule={canBookDirectly || canRequest}
           onInspect={onInspect}
+          onEdit={onEdit}
+          onCancel={onCancel}
+          onSchedule={(room, date, shift) =>
+            onSchedule({
+              room,
+              date,
+              startTime: shift.startTime,
+              endTime: shift.endTime,
+            })
+          }
+          onBulkCancel={onBulkCancel}
         />
       ) : (
         <div className="room-grid">
@@ -1745,11 +2014,11 @@ function RoomMap({
             const roomShiftReservations = shiftReservationsFor(room.id);
             const hasReservation = roomShiftReservations.length > 0;
             const availableIntervals = availableIntervalsFor(room.id);
-            const matchedUsers = query.trim()
+            const matchedUsers = deferredQuery.trim()
               ? roomShiftReservations.filter((reservation) =>
-                  `${reservation.userName} ${reservation.userUsername || ""}`
-                    .toLowerCase()
-                    .includes(query.trim().toLowerCase()),
+                  normalizedSearch(
+                    `${reservation.userName} ${reservation.userUsername || ""}`,
+                  ).includes(normalizedSearch(deferredQuery)),
                 )
               : [];
             const issues = state.issues.filter(
@@ -1762,11 +2031,7 @@ function RoomMap({
               >
                 <div className="room-card-head">
                   <div className="room-icon">
-                    {room.kind === "virtual" ? (
-                      <Video size={21} />
-                    ) : (
-                      <DoorOpen size={21} />
-                    )}
+                    <DoorOpen size={21} />
                   </div>
                   <span className="status-dot">
                     <i />
@@ -1787,10 +2052,7 @@ function RoomMap({
                     <h3>{room.name}</h3>
                     <p>
                       <MapPin size={14} />
-                      {room.location ||
-                        (room.kind === "virtual"
-                          ? "Online"
-                          : "Local não informado")}
+                      {room.location || "Local não informado"}
                     </p>
                   </div>
                   <Eye size={18} />
@@ -1866,7 +2128,9 @@ function RoomMap({
                       </strong>
                     ))
                   ) : (
-                    <strong>Sem intervalo livre</strong>
+                    <strong className="no-availability">
+                      <Clock3 size={12} /> Sem intervalo livre
+                    </strong>
                   )}
                 </div>
                 {roomShiftReservations.length > 0 && (
@@ -1897,7 +2161,7 @@ function RoomMap({
                   {(canBookDirectly || canRequest) && (
                     <button
                       className="btn btn-soft"
-                      onClick={() => onSchedule(room)}
+                      onClick={() => onSchedule({ room })}
                     >
                       <CalendarDays size={16} />{" "}
                       {canBookDirectly ? "Reservar" : "Solicitar"}
@@ -2002,6 +2266,7 @@ function CalendarView({
   onCancel,
   onCancelSeries,
   onCheckout,
+  onBulkCancel,
 }: {
   state: AppState;
   can: (p: Permission) => boolean;
@@ -2011,6 +2276,7 @@ function CalendarView({
   onCancel: (r: Reservation) => void;
   onCancelSeries: (r: Reservation) => void;
   onCheckout: (r: Reservation) => void;
+  onBulkCancel: () => void;
 }) {
   const today = dateKey(state.now);
   const tomorrow = addDays(today, 1);
@@ -2121,6 +2387,8 @@ function CalendarView({
             <button
               className="icon-btn"
               title="Mover intervalo um dia para trás"
+              type="button"
+              aria-label="Mover intervalo um dia para trás"
               onClick={() => shiftRange(-1)}
             >
               <ChevronLeft size={19} />
@@ -2156,6 +2424,8 @@ function CalendarView({
             <button
               className="icon-btn"
               title="Mover intervalo um dia para frente"
+              type="button"
+              aria-label="Mover intervalo um dia para frente"
               onClick={() => shiftRange(1)}
             >
               <ChevronRight size={19} />
@@ -2180,6 +2450,11 @@ function CalendarView({
           </p>
         </div>
         <div className="agenda-actions">
+          {can("booking.manage_all") && (
+            <button className="btn btn-danger" onClick={onBulkCancel}>
+              <CalendarRange size={17} /> Cancelar em massa
+            </button>
+          )}
           <button
             className="btn btn-soft"
             disabled={!filtered.length || exporting}
@@ -2381,6 +2656,8 @@ function CalendarView({
                           <button
                             className="icon-btn danger"
                             title="Cancelar reserva"
+                            type="button"
+                            aria-label={`Cancelar reserva de ${reservation.userName}`}
                             onClick={() => onCancel(reservation)}
                           >
                             <X size={17} />
@@ -2625,7 +2902,7 @@ function RoomsAdmin({
       <div className="panel-head">
         <div>
           <h2>{state.rooms.length} ambientes ativos</h2>
-          <p>Cadastre salas, links virtuais ou outras localidades.</p>
+          <p>Cadastre salas físicas ou outras localidades presenciais.</p>
         </div>
         <button className="btn btn-primary" onClick={onNew}>
           <Plus size={17} /> Nova sala
@@ -2635,11 +2912,7 @@ function RoomsAdmin({
         {state.rooms.map((room) => (
           <div className="data-row" key={room.id}>
             <div className="room-icon">
-              {room.kind === "virtual" ? (
-                <Video size={20} />
-              ) : (
-                <Building2 size={20} />
-              )}
+              <Building2 size={20} />
             </div>
             <div className="grow">
               <strong>{room.name}</strong>
@@ -2652,9 +2925,7 @@ function RoomsAdmin({
             <span className="kind-tag">
               {room.kind === "physical"
                 ? "Física"
-                : room.kind === "virtual"
-                  ? "Virtual"
-                  : "Outra"}
+                : "Outra"}
             </span>
             <button className="btn btn-soft" onClick={() => onEdit(room)}>
               Editar
@@ -2662,6 +2933,8 @@ function RoomsAdmin({
             <button
               className="icon-btn danger"
               title="Desativar"
+              type="button"
+              aria-label={`Desativar ${room.name}`}
               onClick={() => onDisable(room)}
             >
               <X size={17} />
@@ -2784,6 +3057,8 @@ function UsersAdmin({
                 <button
                   className="icon-btn danger"
                   title={`Excluir usuário ${user.name}`}
+                  type="button"
+                  aria-label={`Excluir usuário ${user.name}`}
                   onClick={() => onDelete(user)}
                 >
                   <Trash2 size={17} />
@@ -2892,6 +3167,8 @@ function DevelopmentTeamView({
                   <button
                     className="icon-btn danger"
                     title={`Remover ${member.name}`}
+                    type="button"
+                    aria-label={`Remover ${member.name}`}
                     onClick={() => onDelete(member)}
                   >
                     <Trash2 size={16} />
@@ -3063,6 +3340,8 @@ function RolesAdmin({
                 <button
                   className="icon-btn danger"
                   title={`Excluir perfil ${role.name}`}
+                  type="button"
+                  aria-label={`Excluir perfil ${role.name}`}
                   onClick={() => onDelete(role)}
                 >
                   <Trash2 size={17} />
@@ -3329,15 +3608,34 @@ function Modal({
   onClose: () => void;
   children: React.ReactNode;
 }) {
+  const titleId = useId();
+  useEffect(() => {
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [onClose]);
   return (
     <div className="modal-backdrop" onMouseDown={onClose}>
-      <section className="modal" onMouseDown={(e) => e.stopPropagation()}>
+      <section
+        className="modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        onMouseDown={(e) => e.stopPropagation()}
+      >
         <div className="modal-head">
           <div>
-            <h2>{title}</h2>
+            <h2 id={titleId}>{title}</h2>
             <p>{subtitle}</p>
           </div>
-          <button className="icon-btn" onClick={onClose}>
+          <button
+            className="icon-btn"
+            type="button"
+            aria-label="Fechar janela"
+            onClick={onClose}
+          >
             <X size={19} />
           </button>
         </div>
@@ -3938,32 +4236,41 @@ function BookingEditModal({
   );
   const [shareable, setShareable] = useState(reservation.shareable);
   const [people, setPeople] = useState(reservation.expectedPeople);
+  const [validationError, setValidationError] = useState("");
   const dates = useMemo(() => {
     if (scope === "single") return [startDate];
-    const result: string[] = [];
-    let cursor = startDate;
-    while (cursor <= endDate && result.length < 31) {
-      result.push(cursor);
-      cursor = addDays(cursor, 1);
-    }
-    return result;
+    return businessDatesBetween(startDate, endDate);
   }, [endDate, scope, startDate]);
   const tooLong =
-    dates.length > 30 || (scope === "series" && endDate < startDate);
+    dates.length > 30 ||
+    (scope === "series" &&
+      (endDate < startDate || endDate > addDays(startDate, 29)));
   const conflicts = dates.slice(0, 30).flatMap((date) => {
+    const requestedStart = new Date(`${date}T${startTime}:00-03:00`);
+    const requestedEnd = new Date(
+      `${endTime <= startTime ? addDays(date, 1) : date}T${endTime}:00-03:00`,
+    );
     const conflict = state.reservations.find(
       (item) =>
         item.status === "reserved" &&
         item.roomId === roomId &&
-        dateKey(item.startsAt) === date &&
-        time(item.startsAt) < endTime &&
-        time(item.endsAt) > startTime &&
+        new Date(item.startsAt) < requestedEnd &&
+        new Date(item.endsAt) > requestedStart &&
         (scope === "single"
           ? item.id !== reservation.id
           : item.seriesId !== reservation.seriesId),
     );
     return conflict ? [{ date, conflict }] : [];
   });
+  const invalidSunday = scope === "single" && isSundayDate(startDate);
+  const pastStartSelected = dates.some((date) =>
+    isBookingStartInPast(date, startTime),
+  );
+  useEffect(() => {
+    if (!validationError) return;
+    const timer = window.setTimeout(() => setValidationError(""), 4200);
+    return () => window.clearTimeout(timer);
+  }, [validationError]);
   const applyShift = (shift: { startTime: string; endTime: string }) => {
     setStartTime(shift.startTime);
     setEndTime(shift.endTime);
@@ -3993,7 +4300,16 @@ function BookingEditModal({
         className="modal-form"
         onSubmit={(event) => {
           event.preventDefault();
-          if (tooLong) return;
+          if (tooLong || invalidSunday || pastStartSelected) {
+            setValidationError(
+              invalidSunday
+                ? "Domingos não são dias disponíveis para agendamento."
+                : pastStartSelected
+                  ? "Esse horário já passou. Escolha uma data e um horário futuros."
+                  : "O período deve ter no máximo 30 dias.",
+            );
+            return;
+          }
           const confirmReplacement = conflicts.length > 0;
           if (
             confirmReplacement &&
@@ -4152,6 +4468,11 @@ function BookingEditModal({
         {tooLong && (
           <p className="form-error">O período deve ter no máximo 30 dias.</p>
         )}
+        {validationError && (
+          <p className="form-error error-shake" role="alert">
+            {validationError}
+          </p>
+        )}
         {conflicts.length > 0 && (
           <div className="replacement-notice">
             <strong>
@@ -4196,6 +4517,8 @@ function BookingModal({
   room,
   state,
   initialDate,
+  initialStartTime,
+  initialEndTime,
   canAll,
   onClose,
   onSave,
@@ -4203,41 +4526,57 @@ function BookingModal({
   room?: Room;
   state: AppState;
   initialDate?: string;
+  initialStartTime?: string;
+  initialEndTime?: string;
   canAll: boolean;
   onClose: () => void;
   onSave: (v: unknown) => void;
 }) {
   const today = dateKey(state.now);
-  const startingDate = initialDate && initialDate >= today ? initialDate : today;
+  const startingDate = nextBusinessDate(
+    initialDate && initialDate >= today ? initialDate : today,
+  );
   const [roomId, setRoomId] = useState(room?.id || state.rooms[0]?.id || "");
   const [reason, setReason] = useState("");
-  const [startTime, setStartTime] = useState("08:00");
-  const [endTime, setEndTime] = useState("14:20");
-  const [mode, setMode] = useState<"single" | "period">("single");
+  const [startTime, setStartTime] = useState(initialStartTime || "08:00");
+  const [endTime, setEndTime] = useState(initialEndTime || "14:20");
+  const [mode, setMode] = useState<"single" | "period" | "alternate">(
+    "single",
+  );
   const [startDate, setStartDate] = useState(startingDate);
   const [endDate, setEndDate] = useState(startingDate);
+  const [alternateDates, setAlternateDates] = useState<string[]>([
+    startingDate,
+  ]);
+  const [validationError, setValidationError] = useState("");
   const [userId, setUserId] = useState(state.currentUser!.id);
   const [shareable, setShareable] = useState(false);
   const [people, setPeople] = useState(1);
   const dates = useMemo(() => {
-    const result: string[] = [];
-    let cursor = startDate;
-    while (cursor <= endDate && result.length < 31) {
-      result.push(cursor);
-      cursor = addDays(cursor, 1);
-    }
-    return mode === "single" ? [startDate] : result;
-  }, [mode, startDate, endDate]);
+    if (mode === "single") return [startDate];
+    if (mode === "alternate") return alternateDates;
+    return businessDatesBetween(startDate, endDate);
+  }, [alternateDates, endDate, mode, startDate]);
   const tooLong =
-    dates.length > 30 || (mode === "period" && endDate < startDate);
+    dates.length > 30 ||
+    (mode === "period" &&
+      (endDate < startDate || endDate > addDays(startDate, 29)));
+  const sundaySelected = mode === "single" && isSundayDate(startDate);
+  const pastStartSelected = dates.some((date) =>
+    isBookingStartInPast(date, startTime),
+  );
   const checks = dates.slice(0, 30).map((date) => {
+    const requestedStart = new Date(`${date}T${startTime}:00-03:00`);
+    const requestedEndDate = endTime <= startTime ? addDays(date, 1) : date;
+    const requestedEnd = new Date(
+      `${requestedEndDate}T${endTime}:00-03:00`,
+    );
     const conflict = state.reservations.find(
       (reservation) =>
         reservation.roomId === roomId &&
         reservation.status === "reserved" &&
-        dateKey(reservation.startsAt) === date &&
-        time(reservation.startsAt) < endTime &&
-        time(reservation.endsAt) > startTime,
+        new Date(reservation.startsAt) < requestedEnd &&
+        new Date(reservation.endsAt) > requestedStart,
     );
     return { date, conflict };
   });
@@ -4245,17 +4584,33 @@ function BookingModal({
     setStartTime(shift.startTime);
     setEndTime(shift.endTime);
   };
+  useEffect(() => {
+    if (!validationError) return;
+    const timer = window.setTimeout(() => setValidationError(""), 4200);
+    return () => window.clearTimeout(timer);
+  }, [validationError]);
   return (
     <Modal
       title="Nova reserva"
-      subtitle="Reserve uma data ou um período contínuo de até 30 dias."
+      subtitle="Reserve uma data, um período ou até 30 dias alternados. Domingos são ignorados."
       onClose={onClose}
     >
       <form
         className="modal-form"
         onSubmit={(event) => {
           event.preventDefault();
-          if (tooLong) return;
+          if (tooLong || !dates.length || sundaySelected || pastStartSelected) {
+            setValidationError(
+              sundaySelected
+                ? "Domingos não são dias disponíveis para agendamento."
+                : pastStartSelected
+                  ? "Esse horário já passou. Escolha uma data e um horário futuros."
+                  : !dates.length
+                    ? "Selecione pelo menos uma data disponível."
+                    : "O período deve ter no máximo 30 dias.",
+            );
+            return;
+          }
           const conflictCount = checks.filter(({ conflict }) => conflict).length;
           const confirmReplacement = conflictCount > 0;
           if (
@@ -4327,10 +4682,20 @@ function BookingModal({
           >
             Período
           </button>
+          <button
+            type="button"
+            className={mode === "alternate" ? "active" : ""}
+            onClick={() => {
+              setMode("alternate");
+              if (!alternateDates.length) setAlternateDates([startingDate]);
+            }}
+          >
+            Dias alternados
+          </button>
         </div>
-        <div className="form-grid">
+        {mode !== "alternate" && <div className="form-grid">
           <label>
-            Data inicial
+            {mode === "single" ? "Data" : "Data inicial"}
             <input
               type="date"
               min={today}
@@ -4356,7 +4721,21 @@ function BookingModal({
               />
             </label>
           )}
-        </div>
+        </div>}
+        {mode === "alternate" && (
+          <AlternateDatePicker
+            minimumDate={today}
+            selectedDates={alternateDates}
+            onChange={setAlternateDates}
+          />
+        )}
+        {mode === "period" &&
+          businessDatesBetween(startDate, endDate).length <
+            Math.min(30, Math.max(0, Math.floor((new Date(`${endDate}T12:00:00Z`).getTime() - new Date(`${startDate}T12:00:00Z`).getTime()) / 86_400_000) + 1)) && (
+            <p className="field-help sunday-skip-note">
+              Os domingos do período serão ignorados automaticamente.
+            </p>
+          )}
         <div>
           <span className="section-label">Turnos rápidos</span>
           <div className="shift-buttons">
@@ -4403,6 +4782,11 @@ function BookingModal({
           <p className="form-error">
             O período deve ter no máximo 30 dias e a data final não pode
             preceder a inicial.
+          </p>
+        )}
+        {validationError && (
+          <p className="form-error error-shake" role="alert">
+            {validationError}
           </p>
         )}
         <div className="availability-check">
@@ -4462,25 +4846,37 @@ function RequestModal({
   room,
   state,
   initialDate,
+  initialStartTime,
+  initialEndTime,
   onClose,
   onSave,
 }: {
   room?: Room;
   state: AppState;
   initialDate?: string;
+  initialStartTime?: string;
+  initialEndTime?: string;
   onClose: () => void;
   onSave: (value: unknown) => void;
 }) {
   const today = dateKey(state.now);
-  const startingDate = initialDate && initialDate >= today ? initialDate : today;
+  const startingDate = nextBusinessDate(
+    initialDate && initialDate >= today ? initialDate : today,
+  );
   const [roomId, setRoomId] = useState(room?.id || "");
   const [requestedDate, setRequestedDate] = useState(startingDate);
   const [reason, setReason] = useState("");
-  const [startTime, setStartTime] = useState("08:00");
-  const [endTime, setEndTime] = useState("14:20");
+  const [startTime, setStartTime] = useState(initialStartTime || "08:00");
+  const [endTime, setEndTime] = useState(initialEndTime || "14:20");
   const [shareable, setShareable] = useState(false);
   const [people, setPeople] = useState(1);
   const [urgent, setUrgent] = useState(false);
+  const [validationError, setValidationError] = useState("");
+  useEffect(() => {
+    if (!validationError) return;
+    const timer = window.setTimeout(() => setValidationError(""), 4200);
+    return () => window.clearTimeout(timer);
+  }, [validationError]);
   return (
     <Modal
       title="Solicitar uma sala"
@@ -4491,6 +4887,17 @@ function RequestModal({
         className="modal-form"
         onSubmit={(event) => {
           event.preventDefault();
+          if (
+            isSundayDate(requestedDate) ||
+            isBookingStartInPast(requestedDate, startTime)
+          ) {
+            setValidationError(
+              isSundayDate(requestedDate)
+                ? "Domingos não são dias disponíveis para agendamento."
+                : "Esse horário já passou. Escolha uma data e um horário futuros.",
+            );
+            return;
+          }
           onSave({
             roomId: roomId || null,
             requestedDate,
@@ -4570,6 +4977,11 @@ function RequestModal({
             />
           </label>
         </div>
+        {validationError && (
+          <p className="form-error error-shake" role="alert">
+            {validationError}
+          </p>
+        )}
         <label className="check-row">
           <input
             type="checkbox"
@@ -4623,14 +5035,25 @@ function RequestReviewModal({
   const [people, setPeople] = useState(request.expectedPeople);
   const [urgent, setUrgent] = useState(request.urgent);
   const [comment, setComment] = useState(request.reviewComment || "");
+  const [validationError, setValidationError] = useState("");
+  const requestedStart = new Date(
+    `${requestedDate}T${startTime}:00-03:00`,
+  );
+  const requestedEnd = new Date(
+    `${endTime <= startTime ? addDays(requestedDate, 1) : requestedDate}T${endTime}:00-03:00`,
+  );
   const reservationToReplace = state.reservations.find(
     (reservation) =>
       reservation.roomId === roomId &&
       reservation.status === "reserved" &&
-      dateKey(reservation.startsAt) === requestedDate &&
-      time(reservation.startsAt) < endTime &&
-      time(reservation.endsAt) > startTime,
+      new Date(reservation.startsAt) < requestedEnd &&
+      new Date(reservation.endsAt) > requestedStart,
   );
+  useEffect(() => {
+    if (!validationError) return;
+    const timer = window.setTimeout(() => setValidationError(""), 4200);
+    return () => window.clearTimeout(timer);
+  }, [validationError]);
   const values = (confirmReplacement = false) => ({
     id: request.id,
     roomId: roomId || null,
@@ -4649,6 +5072,18 @@ function RequestReviewModal({
     const submitter = (event.nativeEvent as SubmitEvent)
       .submitter as HTMLButtonElement | null;
     const intent = submitter?.value || "save";
+    if (
+      intent !== "rejected" &&
+      (isSundayDate(requestedDate) ||
+        isBookingStartInPast(requestedDate, startTime))
+    ) {
+      setValidationError(
+        isSundayDate(requestedDate)
+          ? "Domingos não são dias disponíveis para agendamento."
+          : "Esse horário já passou. Escolha uma data e um horário futuros.",
+      );
+      return;
+    }
     if (intent === "approved") {
       const confirmReplacement = Boolean(reservationToReplace);
       if (
@@ -4740,6 +5175,11 @@ function RequestReviewModal({
             />
           </label>
         </div>
+        {validationError && (
+          <p className="form-error error-shake" role="alert">
+            {validationError}
+          </p>
+        )}
         {reservationToReplace && (
           <div className="replacement-notice">
             <strong>Esta aprovação substituirá uma reserva anterior</strong>
@@ -4810,7 +5250,9 @@ function RoomModal({
 }) {
   const [name, setName] = useState(room?.name || "");
   const [location, setLocation] = useState(room?.location || "");
-  const [kind, setKind] = useState(room?.kind || "physical");
+  const [kind, setKind] = useState<"physical" | "other">(
+    room?.kind === "other" ? "other" : "physical",
+  );
   const [capacity, setCapacity] = useState(room?.capacity || 1);
   const [resources, setResources] = useState(room?.resources || "");
   const [networkStatus, setNetworkStatus] = useState(
@@ -4822,7 +5264,7 @@ function RoomModal({
   return (
     <Modal
       title={room ? "Editar sala" : "Nova sala"}
-      subtitle="O ambiente pode ser físico, virtual ou de outra localidade."
+      subtitle="Cadastre salas físicas ou outras localidades presenciais."
       onClose={onClose}
     >
       <form
@@ -4857,10 +5299,11 @@ function RoomModal({
             Tipo
             <select
               value={kind}
-              onChange={(e) => setKind(e.target.value as Room["kind"])}
+              onChange={(e) =>
+                setKind(e.target.value as "physical" | "other")
+              }
             >
               <option value="physical">Sala física</option>
-              <option value="virtual">Sala virtual</option>
               <option value="other">Outra localidade</option>
             </select>
           </label>
@@ -5495,7 +5938,7 @@ function ModalActions({
       <button type="button" className="btn btn-soft" onClick={onClose}>
         Cancelar
       </button>
-      <button className="btn btn-primary">{submit}</button>
+      <button type="submit" className="btn btn-primary">{submit}</button>
     </div>
   );
 }

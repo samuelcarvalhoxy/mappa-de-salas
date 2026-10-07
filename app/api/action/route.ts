@@ -10,6 +10,7 @@ import { PERMISSIONS, type Permission } from "@/lib/types";
 import { canManagePermissionChanges } from "@/lib/permission-policy";
 import {
   isBookableBusinessDate,
+  isBookingPeriodEnded,
   isBookingStartInPast,
   isValidDate,
   isValidTimeRange,
@@ -322,15 +323,22 @@ export async function POST(request: NextRequest) {
       if (
         !requestId ||
         !["approved", "rejected"].includes(decision) ||
-        !validRequestFields(fields, decision === "approved")
+        !validRequestFields(fields, false)
       )
         return fail("Revise os dados e informe uma decisão válida.");
       if (decision === "approved") {
-        const reviewRuleFailure = scheduleRuleFailure(
-          fields.requestedDate,
-          fields.startTime,
-        );
-        if (reviewRuleFailure) return reviewRuleFailure;
+        if (!isBookableBusinessDate(fields.requestedDate))
+          return fail(
+            "Domingos não são dias disponíveis para agendamento.",
+            400,
+            "SUNDAY_NOT_BOOKABLE",
+          );
+        if (isBookingPeriodEnded(fields.requestedDate, fields.startTime, fields.endTime))
+          return fail(
+            "O período solicitado já terminou. Ajuste a data ou o horário final para aprovar.",
+            400,
+            "BOOKING_PERIOD_ENDED",
+          );
       }
       const pending = await db.query(
         `SELECT requester_id FROM booking_requests WHERE id=$1 AND status='pending' LIMIT 1`,

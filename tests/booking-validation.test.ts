@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   isBookableBusinessDate,
+  isBookingPeriodEnded,
   isBookingStartInPast,
   isValidDate,
   isValidTime,
@@ -12,6 +13,31 @@ import {
 test("aceita horários reais no formato HH:MM", () => {
   for (const value of ["00:00", "08:00", "14:20", "23:59"])
     assert.equal(isValidTime(value), true, value);
+});
+
+test("aprovação aceita período futuro, início exato e período em andamento", () => {
+  for (const currentTime of ["14:19", "14:20", "14:21", "19:59"])
+    assert.equal(
+      isBookingPeriodEnded("2026-10-07", "14:20", "20:00", new Date(`2026-10-07T${currentTime}:00-03:00`)),
+      false,
+      currentTime,
+    );
+  assert.equal(isBookingStartInPast("2026-10-07", "14:20", new Date("2026-10-07T14:21:00-03:00")), true);
+});
+
+test("aprovação bloqueia período no término exato ou já encerrado", () => {
+  for (const currentTime of ["20:00", "20:01"])
+    assert.equal(
+      isBookingPeriodEnded("2026-10-07", "14:20", "20:00", new Date(`2026-10-07T${currentTime}:00-03:00`)),
+      true,
+      currentTime,
+    );
+  assert.equal(isBookingPeriodEnded("2026-10-06", "14:20", "20:00", new Date("2026-10-07T14:21:00-03:00")), true);
+});
+
+test("aprovação do turno Extra considera o término na manhã seguinte", () => {
+  assert.equal(isBookingPeriodEnded("2026-10-06", "21:00", "07:00", new Date("2026-10-07T06:59:00-03:00")), false);
+  assert.equal(isBookingPeriodEnded("2026-10-06", "21:00", "07:00", new Date("2026-10-07T07:00:00-03:00")), true);
 });
 
 test("rejeita horários impossíveis ou fora do formato", () => {

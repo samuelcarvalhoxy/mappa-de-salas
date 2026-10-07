@@ -50,3 +50,14 @@ export function isBookingStartInPast(
 export function isBookableBusinessDate(date: string) {
   return isValidDate(date) && !isSundayDate(date);
 }
+
+export function isBookingPeriodEnded(
+  date: string,
+  startTime: string,
+  endTime: string,
+  now = new Date(),
+) {
+  if (!isValidDate(date) || !isValidTimeRange(startTime, endTime)) return false;
+  const { endsAt } = reservationTimestampStrings(date, startTime, endTime);
+  return new Date(endsAt).getTime() <= now.getTime();
+}

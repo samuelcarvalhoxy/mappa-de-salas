@@ -91,7 +91,7 @@ import {
   nextBusinessDate,
   startOfWeekMonday,
 } from "@/lib/calendar-utils";
-import { isBookingStartInPast } from "@/lib/booking-validation";
+import { isBookingPeriodEnded, isBookingStartInPast } from "@/lib/booking-validation";
 import type {
   BulkCancellationFilters,
   BulkCancellationPreview,
@@ -5025,7 +5025,6 @@ function RequestReviewModal({
   onSave: (value: unknown) => void;
   onDecide: (value: unknown, decision: "approved" | "rejected") => void;
 }) {
-  const today = dateKey(state.now);
   const [roomId, setRoomId] = useState(request.roomId || "");
   const [requestedDate, setRequestedDate] = useState(request.requestedDate);
   const [reason, setReason] = useState(request.reason);
@@ -5075,12 +5074,16 @@ function RequestReviewModal({
     if (
       intent !== "rejected" &&
       (isSundayDate(requestedDate) ||
-        isBookingStartInPast(requestedDate, startTime))
+        (intent === "approved"
+          ? isBookingPeriodEnded(requestedDate, startTime, endTime)
+          : isBookingStartInPast(requestedDate, startTime)))
     ) {
       setValidationError(
         isSundayDate(requestedDate)
           ? "Domingos não são dias disponíveis para agendamento."
-          : "Esse horário já passou. Escolha uma data e um horário futuros.",
+          : intent === "approved"
+            ? "O período solicitado já terminou. Ajuste a data ou o horário final para aprovar."
+            : "Esse horário já passou. Escolha uma data e um horário futuros.",
       );
       return;
     }
@@ -5138,7 +5141,6 @@ function RequestReviewModal({
             Data
             <input
               type="date"
-              min={today}
               value={requestedDate}
               onChange={(event) => setRequestedDate(event.target.value)}
               required

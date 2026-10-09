@@ -586,7 +586,7 @@ h3,
 }
 .app-layout {
   display: grid;
-  grid-template-columns: 260px 1fr;
+  grid-template-columns: 260px minmax(0, 1fr);
   min-height: 100vh;
 }
 .sidebar {
@@ -2743,6 +2743,50 @@ main {
   border-color: #40394f;
   background: #2b2638;
   color: #f7f5fa;
+}
+
+.sidebar-toggle {
+  flex-shrink: 0;
+}
+@media (min-width: 781px) {
+  .app-layout.sidebar-collapsed {
+    grid-template-columns: 80px minmax(0, 1fr);
+  }
+  .sidebar-collapsed .sidebar {
+    padding: 24px 10px;
+    scrollbar-gutter: auto;
+  }
+  .sidebar-collapsed .sidebar-head {
+    justify-content: center;
+    padding: 0 0 28px;
+  }
+  .sidebar-collapsed .brand > div:last-child,
+  .sidebar-collapsed .sidebar-group-label,
+  .sidebar-collapsed .sidebar nav button span,
+  .sidebar-collapsed .sidebar-foot > button span,
+  .sidebar-collapsed .user-mini > div:nth-child(2) {
+    display: none;
+  }
+  .sidebar-collapsed .sidebar nav button,
+  .sidebar-collapsed .sidebar-foot > button {
+    justify-content: center;
+    padding: 12px 0;
+  }
+  .sidebar-collapsed .sidebar svg {
+    flex-shrink: 0;
+  }
+  .sidebar-collapsed .sidebar-foot {
+    padding-top: 24px;
+  }
+  .sidebar-collapsed .user-mini {
+    flex-direction: column;
+    padding: 14px 0 0;
+  }
+}
+@media (max-width: 780px) {
+  .sidebar-toggle {
+    display: none;
+  }
 }
 
 .sync {

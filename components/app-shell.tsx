@@ -246,6 +246,7 @@ export function AppShell() {
   const [activeTab, setActiveTab] = useState("map");
   const [mapDate, setMapDate] = useState(() => dateKey(new Date()));
   const [sidebar, setSidebar] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [modal, setModal] = useState<{ type: string; data?: unknown } | null>(
     null,
   );
@@ -258,6 +259,27 @@ export function AppShell() {
     setError(message);
   }, []);
   const notifications = usePushNotifications(state.pushPublicKey, showError);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      try {
+        setSidebarCollapsed(localStorage.getItem("mappa-sidebar-collapsed") === "true");
+      } catch {
+        // Keep navigation usable when browser storage is unavailable.
+      }
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, []);
+
+  function toggleSidebarCollapsed() {
+    const collapsed = !sidebarCollapsed;
+    setSidebarCollapsed(collapsed);
+    try {
+      localStorage.setItem("mappa-sidebar-collapsed", String(collapsed));
+    } catch {
+      // The current session can still use the chosen layout.
+    }
+  }
 
   const refresh = useCallback(async (quiet = false, syncOnly = false) => {
     if (syncOnly && backgroundSyncInFlight.current) return;
@@ -588,8 +610,8 @@ export function AppShell() {
   };
 
   return (
-    <div className="app-layout">
-      <aside className={`sidebar ${sidebar ? "open" : ""}`}>
+    <div className={`app-layout ${sidebarCollapsed ? "sidebar-collapsed" : ""}`}>
+      <aside id="app-sidebar" className={`sidebar ${sidebar ? "open" : ""}`}>
         <div className="sidebar-head">
           <Brand />
           <button
@@ -610,6 +632,9 @@ export function AppShell() {
                   type="button"
                   key={id}
                   className={activeTab === id ? "active" : ""}
+                  aria-label={label}
+                  aria-current={activeTab === id ? "page" : undefined}
+                  title={label}
                   onClick={() => {
                     setActiveTab(id);
                     setSidebar(false);
@@ -624,20 +649,20 @@ export function AppShell() {
         </nav>
         <div className="sidebar-foot">
           {install.available && (
-            <button onClick={install.install}>
+            <button onClick={install.install} aria-label="Instalar aplicativo" title="Instalar aplicativo">
               <Download size={18} />
               <span>Instalar aplicativo</span>
             </button>
           )}
-          <button onClick={() => setModal({ type: "password" })}>
+          <button onClick={() => setModal({ type: "password" })} aria-label="Alterar minha senha" title="Alterar minha senha">
             <KeyRound size={18} />
             <span>Alterar minha senha</span>
           </button>
-          <button onClick={() => setModal({ type: "feedback" })}>
+          <button onClick={() => setModal({ type: "feedback" })} aria-label="Reportar bug ou sugerir melhoria" title="Reportar bug ou sugerir melhoria">
             <Bug size={18} />
             <span>Reportar bug ou sugerir melhoria</span>
           </button>
-          <div className="user-mini">
+          <div className="user-mini" title={`${user.name} · ${user.roleName}`}>
             <div className="avatar">
               {user.name
                 .split(" ")
@@ -673,6 +698,17 @@ export function AppShell() {
       )}
       <main>
         <header className="topbar">
+          <button
+            className="icon-btn sidebar-toggle"
+            type="button"
+            aria-label={sidebarCollapsed ? "Expandir barra lateral" : "Recolher barra lateral"}
+            title={sidebarCollapsed ? "Expandir barra lateral" : "Recolher barra lateral"}
+            aria-expanded={!sidebarCollapsed}
+            aria-controls="app-sidebar"
+            onClick={toggleSidebarCollapsed}
+          >
+            {sidebarCollapsed ? <ChevronRight size={21} /> : <ChevronLeft size={21} />}
+          </button>
           <button
             className="icon-btn mobile-only"
             type="button"

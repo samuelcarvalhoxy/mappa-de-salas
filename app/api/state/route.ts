@@ -8,6 +8,7 @@ import {
   sql,
 } from "@/lib/db";
 import { getPushConfiguration } from "@/lib/settings";
+import { expireBookingRequests } from "@/lib/request-expiration";
 
 export const dynamic = "force-dynamic";
 
@@ -23,6 +24,7 @@ export async function GET(request: NextRequest) {
     developmentTeam: [],
     feedbackReports: [],
     notifications: [],
+    requestExpiryAlerts: [],
     notificationTemplates: [],
     notificationBroadcasts: [],
     shifts: [],
@@ -53,6 +55,7 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: "Sessão inválida" }, { status: 401 });
   const permissions = permissionsOf(user);
   const db = sql();
+  await expireBookingRequests();
   const syncOnly = request.nextUrl.searchParams.get("mode") === "sync";
   await db.query(
     `UPDATE users SET last_seen_at=now() WHERE id=$1 AND (last_seen_at IS NULL OR last_seen_at<now()-interval '5 minutes')`,
@@ -79,6 +82,7 @@ export async function GET(request: NextRequest) {
     notifications,
     notificationTemplates,
     notificationBroadcasts,
+    requestExpiryAlerts,
   ] = await Promise.all([
       syncOnly
         ? Promise.resolve([])
@@ -97,7 +101,7 @@ export async function GET(request: NextRequest) {
       canReviewRequests || canRequest
         ? db.query(
             `SELECT br.id,br.requester_id,u.name requester_name,br.room_id,r.name room_name,br.reason,
-      br.requested_date::text,br.start_time,br.end_time,br.shareable,br.expected_people,br.status,br.review_comment,
+      br.requested_date::text,br.start_time,br.end_time,br.shareable,br.expected_people,br.status,br.review_comment,br.decision_kind,
       br.urgent,br.urgent_acknowledged_at,
       rv.name reviewer_name,br.reviewed_at,br.created_at,br.updated_at
       FROM booking_requests br JOIN users u ON u.id=br.requester_id LEFT JOIN rooms r ON r.id=br.room_id
@@ -178,11 +182,16 @@ export async function GET(request: NextRequest) {
              WHERE nb.created_at>=now()-interval '90 days' ORDER BY nb.created_at DESC`,
           )
         : Promise.resolve([]),
+      canReviewRequests
+        ? db.query(`SELECT id,request_id,message,created_at FROM request_expiry_alerts
+            WHERE user_id=$1 AND acknowledged_at IS NULL ORDER BY created_at,id`, [user.id])
+        : Promise.resolve([]),
     ]);
   if (syncOnly)
     return NextResponse.json({
       configured: true,
       partial: true,
+      requestExpiryAlerts: requestExpiryAlerts.map((alert) => ({ id: alert.id, requestId: alert.request_id, message: alert.message, createdAt: alert.created_at })),
       now: new Date().toISOString(),
       reservations: reservations.map((r) => ({
         id: r.id,
@@ -227,6 +236,7 @@ export async function GET(request: NextRequest) {
         expectedPeople: Number(item.expected_people),
         status: item.status,
         reviewComment: item.review_comment,
+        decisionKind: item.decision_kind,
         reviewerName: item.reviewer_name,
         reviewedAt: item.reviewed_at,
         createdAt: item.created_at,
@@ -246,6 +256,7 @@ export async function GET(request: NextRequest) {
   return NextResponse.json({
     configured: true,
     now: new Date().toISOString(),
+    requestExpiryAlerts: requestExpiryAlerts.map((alert) => ({ id: alert.id, requestId: alert.request_id, message: alert.message, createdAt: alert.created_at })),
     currentUser: {
       id: user.id,
       name: user.name,
@@ -313,6 +324,7 @@ export async function GET(request: NextRequest) {
       expectedPeople: Number(item.expected_people),
       status: item.status,
       reviewComment: item.review_comment,
+      decisionKind: item.decision_kind,
       reviewerName: item.reviewer_name,
       reviewedAt: item.reviewed_at,
       createdAt: item.created_at,

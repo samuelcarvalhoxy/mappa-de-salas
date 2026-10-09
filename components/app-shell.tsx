@@ -91,7 +91,7 @@ import {
   nextBusinessDate,
   startOfWeekMonday,
 } from "@/lib/calendar-utils";
-import { isBookingPeriodEnded, isBookingStartInPast } from "@/lib/booking-validation";
+import { isBookingPeriodEnded, isBookingStartInPast, reservationTimestampStrings } from "@/lib/booking-validation";
 import type {
   BulkCancellationFilters,
   BulkCancellationPreview,
@@ -101,6 +101,8 @@ import { Brand, Empty, Summary } from "./app-shell-parts";
 import { RoomMapSpreadsheet } from "./room-map-spreadsheet";
 import { AlternateDatePicker } from "./alternate-date-picker";
 import { BulkCancelModal } from "./bulk-cancel-modal";
+import { RequestExpiryDialog, RequestOutcomeSummary, RequestOutcomesPanel } from "./request-outcomes";
+import type { RequestDecisionStats } from "@/lib/types";
 import {
   addDays,
   BLUE_ORANGE_PALETTE,
@@ -131,6 +133,7 @@ const EMPTY: AppState = {
   developmentTeam: [],
   feedbackReports: [],
   notifications: [],
+  requestExpiryAlerts: [],
   notificationTemplates: [],
   notificationBroadcasts: [],
   shifts: [],
@@ -160,6 +163,7 @@ const PERMISSION_LABELS: Record<Permission, string> = {
 type StatsData = {
   mode: "user" | "room";
   targetName: string;
+  requestOutcomes: RequestDecisionStats;
   totals: { useCount: number; totalMinutes: number; averageMinutes: number };
   breakdown: {
     id: string;
@@ -247,6 +251,7 @@ export function AppShell() {
   );
   const actionInFlight = useRef(false);
   const backgroundSyncInFlight = useRef(false);
+  const acknowledgedExpiryIds = useRef(new Set<string>());
   const install = useInstallPrompt();
   const showError = useCallback((message: string) => {
     setToast("");
@@ -262,6 +267,8 @@ export function AppShell() {
       const payload = (await api(
         syncOnly ? "/api/state?mode=sync" : "/api/state",
       )) as Partial<AppState> & { partial?: boolean };
+      if (payload.requestExpiryAlerts)
+        payload.requestExpiryAlerts = payload.requestExpiryAlerts.filter((alert) => !acknowledgedExpiryIds.current.has(alert.id));
       setState((current) =>
         payload.partial
           ? ({ ...current, ...payload } as AppState)
@@ -309,6 +316,17 @@ export function AppShell() {
     const timer = window.setInterval(() => setSyncTick(Date.now()), 30_000);
     return () => window.clearInterval(timer);
   }, []);
+  useEffect(() => {
+    if (!state.currentUser || document.visibilityState !== "visible") return;
+    const deadlines = state.requests.filter((request) => request.status === "pending").map((request) =>
+      new Date(reservationTimestampStrings(request.requestedDate, request.startTime, request.endTime).endsAt).getTime());
+    if (!deadlines.length) return;
+    const delay = Math.max(0, Math.min(...deadlines) - new Date(state.now).getTime()) + 100;
+    const timer = window.setTimeout(() => {
+      if (document.visibilityState === "visible") void refresh(true, true);
+    }, Math.min(delay, 2_147_483_647));
+    return () => window.clearTimeout(timer);
+  }, [state.currentUser, state.requests, state.now, refresh]);
   useEffect(() => {
     document.documentElement.dataset.theme = dark ? "dark" : "light";
     document.documentElement.style.setProperty(
@@ -919,6 +937,7 @@ export function AppShell() {
               }}
             />
           )}
+          {activeTab === "stats" && <RequestOutcomesPanel refreshedAt={state.now} />}
           {activeTab === "stats" && <StatsView state={state} />}
           {activeTab === "stats" && <RankingsPanel />}
           {activeTab === "notifications-admin" && (
@@ -1042,6 +1061,15 @@ export function AppShell() {
           }
         />
       )}
+      {can("booking.review") && <RequestExpiryDialog
+        alerts={state.requestExpiryAlerts || []}
+        onAcknowledge={async (id) => {
+          await api("/api/action", { action: "request.acknowledge_expiry", id });
+          acknowledgedExpiryIds.current.add(id);
+          setState((current) => ({ ...current, requestExpiryAlerts: current.requestExpiryAlerts.filter((alert) => alert.id !== id) }));
+          await refresh(true, true);
+        }}
+      />}
       {modal?.type === "room" && (
         <RoomModal
           room={modal.data as Room | undefined}
@@ -2799,7 +2827,7 @@ function RequestsView({
                     </span>
                   </div>
                   <span className={`mini-status ${request.status}`}>
-                    {requestStatusLabel(request.status)}
+                    {request.decisionKind === "automatic_rejected" ? "Rejeição automática" : requestStatusLabel(request.status)}
                   </span>
                   {request.urgent && <span className="urgent-tag"><Zap size={14} /> Urgente</span>}
                 </div>
@@ -2823,7 +2851,7 @@ function RequestsView({
                 {request.reviewComment && (
                   <div className="review-comment">
                     <strong>
-                      Comentário de {request.reviewerName || "análise"}
+                      {request.decisionKind === "automatic_rejected" ? "Motivo automático do sistema" : `Comentário de ${request.reviewerName || "análise"}`}
                     </strong>
                     <p>{request.reviewComment}</p>
                   </div>
@@ -3451,7 +3479,7 @@ function StatsView({ state }: { state: AppState }) {
     return () => {
       cancelled = true;
     };
-  }, [mode, targetId]);
+  }, [mode, targetId, state.now]);
   const selectTarget = (id: string) => {
     setTargetId(id);
     setData(null);
@@ -3513,6 +3541,7 @@ function StatsView({ state }: { state: AppState }) {
         <div className="panel stats-loading">Carregando estatísticas...</div>
       ) : data ? (
         <>
+          <RequestOutcomeSummary data={data.requestOutcomes} title={`Decisões de solicitações: ${data.targetName}`} />
           <div className="summary-grid stats-summary">
             <Summary
               icon={BarChart3}

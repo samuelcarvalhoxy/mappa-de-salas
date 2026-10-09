@@ -47,13 +47,20 @@ self.addEventListener("fetch", (event) => {
 self.addEventListener("push", (event) => {
   const data = event.data?.json?.() || {};
   event.waitUntil(
-    self.registration.showNotification(data.title || "Mappa de Salas", {
-      body: data.body || "Há uma atualização na agenda de salas.",
-      icon: "/icon.svg",
-      badge: "/icon.svg",
-      tag: data.tag || "mappa-update",
-      data: { url: data.url || "/" },
-    }),
+    Promise.all([
+      self.registration.showNotification(data.title || "Mappa de Salas", {
+        body: data.body || "Há uma atualização na agenda de salas.",
+        icon: "/icon.svg",
+        badge: "/icon.svg",
+        tag: data.tag || "mappa-update",
+        data: { url: data.url || "/" },
+      }),
+      data.tag === "request-auto-rejection"
+        ? self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((windows) => {
+            windows.forEach((client) => client.postMessage({ type: "request-auto-rejection" }));
+          })
+        : Promise.resolve(),
+    ]),
   );
 });
 self.addEventListener("notificationclick", (event) => {

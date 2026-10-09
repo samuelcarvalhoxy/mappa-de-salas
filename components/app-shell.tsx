@@ -313,6 +313,15 @@ export function AppShell() {
     };
   }, [refresh]);
   useEffect(() => {
+    if (!("serviceWorker" in navigator)) return;
+    const onExpirationPush = (event: MessageEvent) => {
+      if (event.data?.type === "request-auto-rejection" && document.visibilityState === "visible")
+        void refresh(true, true);
+    };
+    navigator.serviceWorker.addEventListener("message", onExpirationPush);
+    return () => navigator.serviceWorker.removeEventListener("message", onExpirationPush);
+  }, [refresh]);
+  useEffect(() => {
     const timer = window.setInterval(() => setSyncTick(Date.now()), 30_000);
     return () => window.clearInterval(timer);
   }, []);

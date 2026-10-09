@@ -24,6 +24,8 @@ import {
 import { handleFacilityAction } from "@/lib/action-handlers/facilities";
 import { handleNotificationAction } from "@/lib/action-handlers/notifications";
 import { handleBulkBookingAction } from "@/lib/action-handlers/bulk-bookings";
+import { expireBookingRequests } from "@/lib/request-expiration";
+import { ACKNOWLEDGE_EXPIRY_ALERT_SQL, REQUEST_END_SQL } from "@/lib/request-expiration-sql";
 import {
   estimateResponseMinutes,
   responseDurationLabel,
@@ -158,6 +160,16 @@ export async function POST(request: NextRequest) {
     );
 
   try {
+    if (action.startsWith("request.")) await expireBookingRequests();
+    if (action === "request.acknowledge_expiry") {
+      if (!requirePermission("booking.review"))
+        return fail("Sem permissão para analisar solicitações.", 403);
+      const id = String(body.id || "");
+      if (!/^[0-9a-f-]{36}$/i.test(id)) return fail("Aviso inválido.");
+      const acknowledged = await db.query(ACKNOWLEDGE_EXPIRY_ALERT_SQL, [id, actor.id]);
+      if (!acknowledged.length) return fail("Aviso não encontrado.", 404);
+      return NextResponse.json({ ok: true });
+    }
     const facilityResponse = await handleFacilityAction({
       action,
       body,
@@ -355,7 +367,7 @@ export async function POST(request: NextRequest) {
           `UPDATE booking_requests SET room_id=$1,reason=$2,requested_date=$3::date,start_time=$4,end_time=$5,
           shareable=$6,expected_people=$7,status='rejected',review_comment=$8,reviewed_by=$9,reviewed_at=now(),updated_at=now(),
           urgent_acknowledged_at=COALESCE(urgent_acknowledged_at,now()),urgent_acknowledged_by=COALESCE(urgent_acknowledged_by,$9)
-          WHERE id=$10 AND status='pending' RETURNING id`,
+          WHERE id=$10 AND status='pending' AND (${REQUEST_END_SQL})>clock_timestamp() RETURNING id`,
           [
             fields.roomId,
             fields.reason,
@@ -397,26 +409,26 @@ export async function POST(request: NextRequest) {
         );
         const confirmReplacement = body.confirmReplacement === true;
         const approved = await db.query(
-          `WITH conflicts AS (
+          `WITH reservation_id AS (SELECT gen_random_uuid() id), conflicts AS (
             SELECT id,user_id FROM reservations
             WHERE room_id=$1 AND status='reserved' AND starts_at<$12::timestamptz AND ends_at>$11::timestamptz
           ), approved_request AS (
             UPDATE booking_requests SET room_id=$1,reason=$2,requested_date=$3::date,start_time=$4,end_time=$5,shareable=$6,
               expected_people=$7,status='approved',review_comment=$8,reviewed_by=$9,reviewed_at=now(),updated_at=now(),
+              approved_reservation_id=(SELECT id FROM reservation_id),
               urgent_acknowledged_at=COALESCE(urgent_acknowledged_at,now()),urgent_acknowledged_by=COALESCE(urgent_acknowledged_by,$9)
-            WHERE id=$10 AND status='pending' AND ($13::boolean OR NOT EXISTS (SELECT 1 FROM conflicts)) RETURNING requester_id
+            WHERE id=$10 AND status='pending' AND (${REQUEST_END_SQL})>clock_timestamp()
+              AND $12::timestamptz>clock_timestamp()
+              AND ($13::boolean OR NOT EXISTS (SELECT 1 FROM conflicts)) RETURNING requester_id
           ), displaced AS (
             UPDATE reservations SET status='cancelled',updated_at=now()
             WHERE id IN (SELECT id FROM conflicts) AND EXISTS (SELECT 1 FROM approved_request)
             RETURNING id,user_id
           ), created_reservation AS (
-            INSERT INTO reservations(room_id,user_id,reason,starts_at,ends_at,shareable,expected_people,status,created_by)
-            SELECT $1,requester_id,$2,$11::timestamptz,$12::timestamptz,$6,$7,'reserved',$9 FROM approved_request RETURNING id
-          ), linked_request AS (
-            UPDATE booking_requests SET approved_reservation_id=(SELECT id FROM created_reservation)
-            WHERE id=$10 AND EXISTS (SELECT 1 FROM created_reservation) RETURNING id
+            INSERT INTO reservations(id,room_id,user_id,reason,starts_at,ends_at,shareable,expected_people,status,created_by)
+            SELECT (SELECT id FROM reservation_id),$1,requester_id,$2,$11::timestamptz,$12::timestamptz,$6,$7,'reserved',$9 FROM approved_request RETURNING id
           ) SELECT (SELECT count(*)::int FROM conflicts) conflict_count,
-            (SELECT count(*)::int FROM linked_request) approved_count,
+            (SELECT count(*)::int FROM created_reservation) approved_count,
             (SELECT count(*)::int FROM displaced) displaced_count,
             COALESCE((SELECT array_agg(DISTINCT user_id::text) FROM displaced),'{}'::text[]) displaced_user_ids`,
           [

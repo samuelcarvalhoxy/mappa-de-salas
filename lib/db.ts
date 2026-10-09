@@ -2,6 +2,7 @@ import { neon, NeonQueryFunction } from "@neondatabase/serverless";
 import bcrypt from "bcryptjs";
 import type { Permission } from "./types";
 import { SECURITY_FIELDS } from "./security-options";
+import { REQUEST_EXPIRATION_SCHEMA } from "./request-expiration-sql";
 
 let client: NeonQueryFunction<false, false> | null = null;
 let ready: Promise<void> | null = null;
@@ -226,6 +227,8 @@ async function initialize() {
     month date NOT NULL, actor_key text NOT NULL, action text NOT NULL, event_count int NOT NULL DEFAULT 0,
     PRIMARY KEY(month,actor_key,action)
   )`);
+  // All schema changes and the one-time counter backfill commit atomically.
+  await db.transaction(REQUEST_EXPIRATION_SCHEMA.split("\n-- next\n").map((statement) => db.query(statement)));
 
   const roles = [
     {

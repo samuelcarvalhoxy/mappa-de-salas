@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { ensureDatabase, sql } from "@/lib/db";
 import { notifyUsers } from "@/lib/push";
+import { expireBookingRequests } from "@/lib/request-expiration";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
@@ -75,10 +76,6 @@ async function runDailyRetention(date: string, hour: number) {
      ON CONFLICT(month,actor_key,action) DO UPDATE
      SET event_count=retention_rollups.event_count+EXCLUDED.event_count`,
   );
-  await db.query(
-    `UPDATE booking_requests SET status='cancelled',updated_at=now()
-     WHERE status='pending' AND created_at<now()-interval '90 days'`,
-  );
   const deleted = await Promise.all([
     db.query(`DELETE FROM notifications WHERE created_at<now()-interval '90 days' RETURNING id`),
     db.query(`DELETE FROM notification_broadcasts WHERE created_at<now()-interval '90 days' RETURNING id`),
@@ -86,6 +83,7 @@ async function runDailyRetention(date: string, hour: number) {
     db.query(`DELETE FROM room_issues WHERE status='resolved' AND resolved_at<now()-interval '90 days' RETURNING id`),
     db.query(`DELETE FROM booking_requests WHERE status<>'pending' AND created_at<now()-interval '90 days' RETURNING id`),
     db.query(`DELETE FROM audit_log WHERE created_at<now()-interval '90 days' RETURNING id`),
+    db.query(`DELETE FROM request_expiry_alerts WHERE acknowledged_at IS NOT NULL AND acknowledged_at<now()-interval '90 days' RETURNING id`),
   ]);
   const reservations = await db.query(
     `DELETE FROM reservations WHERE ends_at<now()-interval '90 days' RETURNING id`,
@@ -102,12 +100,13 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: "Acesso negado." }, { status: 401 });
   await ensureDatabase();
   const { date, hour } = bahiaParts();
+  const expiration = await expireBookingRequests();
   const [reminders, retention] = await Promise.all([
     sendRequestReminders(hour),
     runDailyRetention(date, hour),
   ]);
   console.info(
-    JSON.stringify({ event: "automation.completed", date, hour, reminders, retention }),
+    JSON.stringify({ event: "automation.completed", date, hour, expiration, reminders, retention }),
   );
-  return NextResponse.json({ ok: true, date, hour, reminders, retention });
+  return NextResponse.json({ ok: true, date, hour, expiration, reminders, retention });
 }

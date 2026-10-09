@@ -95,6 +95,16 @@ export type SystemNotification = {
   createdAt: string;
 };
 
+export type RequestDecisionCounts = {
+  approved: number;
+  manualRejected: number;
+  automaticRejected: number;
+};
+export type RequestDecisionStats = {
+  accumulated: RequestDecisionCounts;
+  recent90Days: RequestDecisionCounts;
+};
+
 export type NotificationTemplate = {
   id: string;
   name: string;
@@ -141,6 +151,7 @@ export type BookingRequest = {
   expectedPeople: number;
   status: "pending" | "approved" | "rejected" | "cancelled";
   reviewComment: string;
+  decisionKind?: "approved" | "manual_rejected" | "automatic_rejected" | null;
   reviewerName: string | null;
   reviewedAt: string | null;
   createdAt: string;
@@ -185,6 +196,7 @@ export type AppState = {
   developmentTeam: DevelopmentMember[];
   feedbackReports: FeedbackReport[];
   notifications: SystemNotification[];
+  requestExpiryAlerts: { id: string; requestId: string; message: string; createdAt: string }[];
   notificationTemplates: NotificationTemplate[];
   notificationBroadcasts: NotificationBroadcast[];
   shifts: { id: string; name: string; startTime: string; endTime: string }[];

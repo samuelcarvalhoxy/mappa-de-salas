@@ -2,12 +2,13 @@ import { NextRequest, NextResponse } from "next/server";
 import { getSessionUserId } from "@/lib/auth";
 import { ensureDatabase, getUserWithRole, permissionsOf, sql } from "@/lib/db";
 import { z } from "zod";
+import { REQUEST_DECISION_STATS_SQL } from "@/lib/request-expiration-sql";
 
 export const dynamic = "force-dynamic";
 
 const querySchema = z.object({
-  mode: z.enum(["user", "room"]),
-  id: z.string().uuid(),
+  mode: z.enum(["user", "room", "requests"]),
+  id: z.string().uuid().optional(),
 });
 
 export async function GET(request: NextRequest) {
@@ -30,15 +31,26 @@ export async function GET(request: NextRequest) {
 
   const parsed = querySchema.safeParse({
     mode: request.nextUrl.searchParams.get("mode"),
-    id: request.nextUrl.searchParams.get("id"),
+    id: request.nextUrl.searchParams.get("id") || undefined,
   });
-  if (!parsed.success)
+  if (!parsed.success || (parsed.data.mode !== "requests" && !parsed.data.id))
     return NextResponse.json(
       { error: "Selecione um usuário ou uma sala válida." },
       { status: 400 },
     );
 
   const db = sql();
+  const decisionRows = await db.query(REQUEST_DECISION_STATS_SQL, [
+    parsed.data.mode === "user" ? parsed.data.id : null,
+    parsed.data.mode === "room" ? parsed.data.id : null,
+  ]);
+  const counts = (column: "total" | "recent") => ({
+    approved: Number(decisionRows.find((row) => row.outcome === "approved")?.[column]) || 0,
+    manualRejected: Number(decisionRows.find((row) => row.outcome === "manual_rejected")?.[column]) || 0,
+    automaticRejected: Number(decisionRows.find((row) => row.outcome === "automatic_rejected")?.[column]) || 0,
+  });
+  const requestOutcomes = { accumulated: counts("total"), recent90Days: counts("recent") };
+  if (parsed.data.mode === "requests") return NextResponse.json({ requestOutcomes });
   if (parsed.data.mode === "user") {
     const target = await db.query(
       `SELECT name FROM users WHERE id=$1 AND deleted_at IS NULL LIMIT 1`,
@@ -66,6 +78,7 @@ export async function GET(request: NextRequest) {
     }));
     return NextResponse.json({
       mode: "user",
+      requestOutcomes,
       targetName: target[0].name,
       breakdown,
       totals: summarize(breakdown),
@@ -97,6 +110,7 @@ export async function GET(request: NextRequest) {
   }));
   return NextResponse.json({
     mode: "room",
+    requestOutcomes,
     targetName: target[0].name,
     breakdown,
     totals: summarize(breakdown),

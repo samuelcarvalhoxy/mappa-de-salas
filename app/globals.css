@@ -1759,6 +1759,9 @@ main {
   place-items: center;
   padding: 20px;
 }
+.request-expiry-backdrop { z-index: 120; }
+.request-expiry-backdrop .modal-form > p { line-height: 1.6; }
+.request-outcomes { margin-bottom: 18px; }
 .modal {
   width: min(610px, 100%);
   max-height: 92vh;

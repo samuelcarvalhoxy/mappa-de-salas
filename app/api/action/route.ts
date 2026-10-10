@@ -24,6 +24,7 @@ import {
 import { handleFacilityAction } from "@/lib/action-handlers/facilities";
 import { handleNotificationAction } from "@/lib/action-handlers/notifications";
 import { handleBulkBookingAction } from "@/lib/action-handlers/bulk-bookings";
+import { handleSpreadsheetBookingAction } from "@/lib/action-handlers/spreadsheet-bookings";
 import { expireBookingRequests } from "@/lib/request-expiration";
 import { ACKNOWLEDGE_EXPIRY_ALERT_SQL, REQUEST_END_SQL } from "@/lib/request-expiration-sql";
 import {
@@ -197,6 +198,8 @@ export async function POST(request: NextRequest) {
       audit,
     });
     if (bulkBookingResponse) return bulkBookingResponse;
+    const spreadsheetResponse = await handleSpreadsheetBookingAction({ action, body, db, actor, requirePermission });
+    if (spreadsheetResponse) return spreadsheetResponse;
 
     if (action === "request.create") {
       if (!requirePermission("booking.request"))

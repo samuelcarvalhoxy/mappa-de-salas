@@ -8,12 +8,23 @@ Produção: https://mappa-de-salas.vercel.app/
 
 - Mapa em cartões ou planilha semanal, com sete dias e domingo na última coluna.
 - Edição e cancelamento rápidos na planilha, exportação XLSX e cancelamento em massa por sala, pessoa, período e turno.
+- Seleção de células e intervalos, Ctrl+C/X/V e movimentação de agendamentos com o mouse, com prévia e validação atômica no servidor.
 - Reservas únicas, por período ou em até 30 datas alternadas, sempre com domingo indisponível.
 - Validação de horários passados e suporte ao turno Extra que atravessa a meia-noite.
 - Solicitações com confirmação de recebimento e estimativa baseada nos últimos 90 dias.
 - Histórico, relatórios e auditoria com retenção detalhada de 90 dias.
 
 ## Desenvolvimento
+
+### Interação com a planilha
+
+Clique em uma célula para selecionar. Arraste pelas células ou use Shift e as setas para selecionar um intervalo. Ctrl+C copia os agendamentos; Ctrl+X prepara a movimentação, sem alterar a origem; Ctrl+V abre a prévia no destino. Os botões Copiar, Recortar e Colar oferecem as mesmas ações. O texto copiado também pode ser colado no Excel.
+
+Arraste a reserva selecionada ou sua alça para outra sala, dia ou turno. Duplo clique ou Enter abre a célula para agendar ou editar. No celular, o toque continua abrindo a célula.
+
+A prévia preserva a duração e permite ajustar sala, data e horário de início. Células vazias mantêm o espaçamento da seleção, e reservas que atravessam turnos são aplicadas uma única vez. Cada operação admite até 100 reservas. Domingos, destinos passados, alterações concorrentes e sobreposições dentro da seleção impedem a aplicação completa. Reservas existentes no destino só são substituídas após confirmação explícita.
+
+Copiar reservas exige `booking.create_all` ou `booking.create_own`; com permissão própria, as cópias são criadas em nome do usuário. Mover reservas exige `booking.manage_all` ou, para reservas próprias, `booking.create_own`. A movimentação afeta somente as ocorrências selecionadas, preserva seus IDs e mantém a vinculação a solicitações aprovadas. Operações concluídas geram auditoria e notificações.
 
 Requisitos: Node.js e pnpm.
 

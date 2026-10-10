@@ -6,6 +6,10 @@ import {
   CalendarRange,
   Clock3,
   Download,
+  Copy,
+  Scissors,
+  ClipboardPaste,
+  GripVertical,
   Pencil,
   X,
 } from "lucide-react";
@@ -13,6 +17,9 @@ import { MAP_SHIFTS, mapShiftBounds, type MapShift } from "@/lib/map-shifts";
 import { isSundayDate, startOfWeekMonday } from "@/lib/calendar-utils";
 import type { Reservation, Room } from "@/lib/types";
 import { addDays, time } from "./app-shell-utils";
+import { sheetBounds, type SheetPosition, type SheetTransfer } from "@/lib/spreadsheet-bookings";
+import { useSpreadsheetEditing, type SpreadsheetEditing } from "./use-spreadsheet-editing";
+import { SheetTransferDialog } from "./sheet-transfer-dialog";
 
 const SPREADSHEET_DAYS = 7;
 
@@ -210,6 +217,9 @@ async function exportSpreadsheetMap(
 }
 
 function SpreadsheetCell({
+  editing,
+  position,
+  canMove,
   room,
   date,
   shift,
@@ -222,6 +232,9 @@ function SpreadsheetCell({
   onCancel,
   onSchedule,
 }: {
+  editing: SpreadsheetEditing;
+  position: SheetPosition;
+  canMove: (reservation: Reservation) => boolean;
   room: Room;
   date: string;
   shift: MapShift;
@@ -236,21 +249,39 @@ function SpreadsheetCell({
 }) {
   const sunday = isSundayDate(date);
   const isFree = cellReservations.length === 0;
+  const selected = editing.isSelected(position);
+  const drop = editing.dropTarget?.row === position.row && editing.dropTarget?.column === position.column;
+  const cut = editing.clipboard?.mode === "move" && cellReservations.some((reservation) => editing.clipboard?.items.some((item) => item.reservation.id === reservation.id));
+  const classes = `${selected ? " sheet-cell-selected" : ""}${drop ? " sheet-cell-drop" : ""}${cut ? " sheet-cell-cut" : ""}`;
+  const openCell = () => {
+    if (sunday) return;
+    if (isFree) { if (canSchedule) onSchedule(room, date, shift); else onInspect(room); }
+    else if (canMove(cellReservations[0])) onEdit(cellReservations[0]);
+    else onInspect(room);
+  };
+  const interaction = {
+    ...editing.cellProps(position),
+    role: "gridcell",
+    onDoubleClick: openCell,
+    onKeyDown: (event: React.KeyboardEvent<HTMLTableCellElement>) => {
+      if (event.key === "Enter" && event.target === event.currentTarget) { event.preventDefault(); openCell(); }
+    },
+    "aria-label": `${room.name}, ${spreadsheetDateLabel(date)}, ${shift.name}, ${cellReservations.length} reserva(s)`,
+  };
   if (sunday)
     return (
-      <td className="spreadsheet-cell-sunday">
+      <td {...interaction} className={`spreadsheet-cell-sunday${classes}`}>
         <span aria-label={`${room.name}, domingo indisponível`}>DOMINGO</span>
       </td>
     );
 
   if (isFree)
     return (
-      <td className="spreadsheet-cell-free">
+      <td {...interaction} className={`spreadsheet-cell-free${classes}`}>
         <button
           type="button"
-          onClick={() =>
-            canSchedule ? onSchedule(room, date, shift) : onInspect(room)
-          }
+          tabIndex={-1}
+          onClick={(event) => { if (editing.touch.current || event.detail === 0) openCell(); }}
           aria-label={`${room.name}, livre em ${spreadsheetDateLabel(date)}, turno ${shift.name}${canSchedule ? ", agendar" : ""}`}
         >
           <span className="spreadsheet-free-label">LIVRE</span>
@@ -263,17 +294,21 @@ function SpreadsheetCell({
 
   const reservation = cellReservations[0];
   const future = new Date(reservation.endsAt) > new Date(now);
+  const movable = canMove(reservation);
   return (
-    <td className="spreadsheet-cell-booked">
+    <td {...interaction} className={`spreadsheet-cell-booked${classes}`}>
       <div className="spreadsheet-reservation-row">
         <button
           type="button"
           className={`spreadsheet-reservation spreadsheet-tone-${reservationTone(reservation)}`}
           title={`${reservation.reason} | ${reservation.userName} | ${time(reservation.startsAt)} às ${time(reservation.endsAt)}${cellReservations.length > 1 ? ` | mais ${cellReservations.length - 1} reserva(s)` : ""}`}
-          aria-label={`${canManage && future ? "Editar" : "Ver"} reserva de ${reservation.userName}, ${reservation.reason}, das ${time(reservation.startsAt)} às ${time(reservation.endsAt)}${cellReservations.length > 1 ? `, mais ${cellReservations.length - 1} reserva(s) no turno` : ""}`}
-          onClick={() =>
-            canManage && future ? onEdit(reservation) : onInspect(room)
-          }
+          aria-label={`${movable ? "Editar" : "Ver"} reserva de ${reservation.userName}, ${reservation.reason}, das ${time(reservation.startsAt)} às ${time(reservation.endsAt)}${cellReservations.length > 1 ? `, mais ${cellReservations.length - 1} reserva(s) no turno` : ""}`}
+          tabIndex={-1}
+          draggable={selected && movable}
+          data-sheet-action={selected && movable ? true : undefined}
+          onDragStart={(event) => editing.startDrag(event, position)}
+          onDragEnd={editing.endDrag}
+          onClick={(event) => { if (editing.touch.current || event.detail === 0) openCell(); }}
         >
           <strong>{reservation.reason}</strong>
           <span>{reservation.userName}</span>
@@ -283,17 +318,27 @@ function SpreadsheetCell({
           {cellReservations.length > 1 && (
             <em>+{cellReservations.length - 1}</em>
           )}
-          {canManage && future && (
+          {movable && (
             <Pencil className="spreadsheet-cell-action" size={10} />
           )}
         </button>
+        {movable && (
+          <button type="button" className="sheet-drag-handle" data-sheet-action draggable
+            title="Arrastar agendamento ou seleção para outra célula" aria-label="Arrastar agendamento ou seleção"
+            onDragStart={(event) => editing.startDrag(event, position)} onDragEnd={editing.endDrag}
+            onClick={(event) => event.stopPropagation()} onDoubleClick={(event) => event.stopPropagation()}>
+            <GripVertical size={12} />
+          </button>
+        )}
         {canManage && future && (
           <button
             type="button"
             className="spreadsheet-cancel"
+            data-sheet-action
             title="Cancelar reserva"
             aria-label={`Cancelar reserva de ${reservation.userName}`}
-            onClick={() => onCancel(reservation)}
+            onClick={(event) => { event.stopPropagation(); onCancel(reservation); }}
+            onDoubleClick={(event) => event.stopPropagation()}
           >
             <X size={12} />
           </button>
@@ -304,6 +349,9 @@ function SpreadsheetCell({
 }
 
 function SpreadsheetShift({
+  editing,
+  shiftIndex,
+  canMove,
   shift,
   dates,
   rooms,
@@ -316,6 +364,9 @@ function SpreadsheetShift({
   onCancel,
   onSchedule,
 }: {
+  editing: SpreadsheetEditing;
+  shiftIndex: number;
+  canMove: (reservation: Reservation) => boolean;
   shift: MapShift;
   dates: string[];
   rooms: Room[];
@@ -329,7 +380,7 @@ function SpreadsheetShift({
   onSchedule: (room: Room, date: string, shift: MapShift) => void;
 }) {
   return (
-    <table className="room-spreadsheet-table">
+    <table className="room-spreadsheet-table" role="grid" aria-label={`Planilha do turno ${shift.name}`}>
       <thead>
         <tr className="spreadsheet-date-row">
           <th scope="col">SALAS {shift.name.toLocaleUpperCase("pt-BR")}</th>
@@ -357,7 +408,7 @@ function SpreadsheetShift({
         </tr>
       </thead>
       <tbody>
-        {rooms.map((room) => (
+        {rooms.map((room, roomIndex) => (
           <tr key={`${shift.id}:${room.id}`}>
             <th scope="row">
               <button
@@ -369,8 +420,11 @@ function SpreadsheetShift({
                 <small>{room.location || "Local não informado"}</small>
               </button>
             </th>
-            {dates.map((date) => (
+            {dates.map((date, dateIndex) => (
               <SpreadsheetCell
+                editing={editing}
+                position={{ row: shiftIndex * rooms.length + roomIndex, column: dateIndex }}
+                canMove={canMove}
                 room={room}
                 date={date}
                 shift={shift}
@@ -397,6 +451,11 @@ function SpreadsheetShift({
 }
 
 export function RoomMapSpreadsheet({
+  currentUserId,
+  canCopy,
+  canCopyAll,
+  canMoveOwn,
+  onTransfer,
   startDate,
   rooms,
   reservations,
@@ -409,6 +468,11 @@ export function RoomMapSpreadsheet({
   onSchedule,
   onBulkCancel,
 }: {
+  currentUserId: string;
+  canCopy: boolean;
+  canCopyAll: boolean;
+  canMoveOwn: boolean;
+  onTransfer: (transfer: SheetTransfer) => Promise<void>;
   startDate: string;
   rooms: Room[];
   reservations: Reservation[];
@@ -434,6 +498,11 @@ export function RoomMapSpreadsheet({
     () => buildReservationIndex(reservations, dates),
     [dates, reservations],
   );
+  const canMove = (reservation: Reservation) => reservation.status === "reserved" && new Date(reservation.endsAt) > new Date(now)
+    && (canManage || (canMoveOwn && reservation.userId === currentUserId));
+  const editing = useSpreadsheetEditing({ rooms, dates, index: reservationIndex, canCopy, canMove });
+  const bounds = editing.selection ? sheetBounds(editing.selection) : null;
+  const selectedCount = bounds ? (bounds.bottom - bounds.top + 1) * (bounds.right - bounds.left + 1) : 0;
 
   const runExport = async () => {
     setExporting(true);
@@ -445,7 +514,11 @@ export function RoomMapSpreadsheet({
   };
 
   return (
-    <section className="room-spreadsheet" aria-label="Mapa de salas em planilha">
+    <section className="room-spreadsheet" aria-label="Mapa de salas em planilha"
+      onCopy={(event) => editing.onClipboard(event, "copy")}
+      onCut={(event) => editing.onClipboard(event, "move")}
+      onPaste={(event) => editing.onClipboard(event, "paste")}
+      onKeyDown={editing.onKeyDown}>
       <div className="room-spreadsheet-guide">
         <div>
           <CalendarRange size={18} />
@@ -477,13 +550,23 @@ export function RoomMapSpreadsheet({
         </div>
       </div>
       <p className="room-spreadsheet-hint">
-        Arraste horizontalmente para ver a semana. Toque em LIVRE para agendar,
-        em uma reserva para editar e no X para cancelar.
+        Clique para selecionar e arraste pelas células para selecionar um intervalo. Use Ctrl+C, Ctrl+X e Ctrl+V.
+        Arraste a reserva selecionada ou sua alça para mover. Duplo clique ou Enter abre a célula. No celular, toque para abrir.
       </p>
+      <div className="sheet-edit-toolbar" aria-label="Ações da seleção">
+        <span>{selectedCount ? `${selectedCount} célula(s) selecionada(s)` : "Selecione uma célula"}</span>
+        <button className="btn btn-soft" type="button" disabled={!editing.selection} onClick={() => editing.copy("copy")}><Copy size={15} /> Copiar</button>
+        {(canManage || canMoveOwn) && <button className="btn btn-soft" type="button" disabled={!editing.selection} onClick={() => editing.copy("move")}><Scissors size={15} /> Recortar</button>}
+        {(canCopy || canManage || canMoveOwn) && <button className="btn btn-soft" type="button" disabled={!editing.selection || !editing.clipboard?.items.length} onClick={() => editing.paste()}><ClipboardPaste size={15} /> Colar</button>}
+      </div>
+      {editing.message && <p className="sheet-status" role="status">{editing.message}</p>}
       <div className="room-spreadsheet-scroll" tabIndex={0}>
         <div className="room-spreadsheet-tables">
-          {MAP_SHIFTS.map((shift) => (
+          {MAP_SHIFTS.map((shift, shiftIndex) => (
             <SpreadsheetShift
+              editing={editing}
+              shiftIndex={shiftIndex}
+              canMove={canMove}
               shift={shift}
               dates={dates}
               rooms={rooms}
@@ -500,6 +583,15 @@ export function RoomMapSpreadsheet({
           ))}
         </div>
       </div>
+      {editing.pending && <SheetTransferDialog transfer={editing.pending.transfer} clipboard={editing.pending.clipboard}
+        rooms={rooms} ownCopies={!canCopyAll}
+        onClose={() => editing.setPending(null)}
+        onConfirm={async (transfer) => {
+          await onTransfer(transfer);
+          editing.setPending(null);
+          if (transfer.mode === "move") editing.setClipboard(null);
+          editing.setMessage(`${transfer.entries.length} agendamento(s) ${transfer.mode === "move" ? "movido(s)" : "copiado(s)"} com sucesso.`);
+        }} />}
     </section>
   );
 }

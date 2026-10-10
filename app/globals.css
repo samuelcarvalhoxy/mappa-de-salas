@@ -1035,7 +1035,7 @@ main {
   background: var(--brand);
 }
 .room-spreadsheet-hint {
-  display: none;
+  display: block;
   padding: 10px 14px;
   color: var(--muted);
   font-size: 10px;
@@ -2901,6 +2901,85 @@ main {
 .spreadsheet-cell-free button {
   position: relative;
 }
+
+.room-spreadsheet-table td[data-sheet-row] {
+  position: relative;
+  user-select: none;
+}
+.room-spreadsheet-table td.sheet-cell-selected {
+  box-shadow: inset 0 0 0 2px #2563eb;
+}
+.room-spreadsheet-table td.sheet-cell-selected::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: rgba(37, 99, 235, 0.13);
+  pointer-events: none;
+}
+.room-spreadsheet-table td.sheet-cell-cut {
+  outline: 2px dashed #f59e0b;
+  outline-offset: -3px;
+}
+.room-spreadsheet-table td.sheet-cell-drop {
+  box-shadow: inset 0 0 0 3px #10b981;
+}
+.room-spreadsheet-table td[data-sheet-row]:focus-visible {
+  outline: 3px solid #2563eb;
+  outline-offset: -3px;
+}
+.sheet-edit-toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 0 14px 12px;
+}
+.sheet-edit-toolbar > span {
+  color: var(--muted);
+  font-size: 12px;
+  margin-right: auto;
+}
+.sheet-status {
+  padding: 9px 12px;
+  background: var(--brand-soft);
+  border-radius: 8px;
+  font-size: 12px;
+}
+.sheet-drag-handle {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 17px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  padding: 0;
+  background: rgba(255, 255, 255, 0.85);
+  color: #4c1d95;
+  cursor: grab;
+  z-index: 2;
+}
+.sheet-drag-handle:active { cursor: grabbing; }
+.spreadsheet-reservation-row:has(.sheet-drag-handle) .spreadsheet-reservation { padding-left: 19px; }
+.sheet-transfer-dialog {
+  position: fixed;
+  inset: 0;
+  margin: auto;
+  width: min(860px, calc(100vw - 24px));
+  max-height: calc(100dvh - 32px);
+  border: 1px solid var(--line);
+  color: var(--text);
+}
+.sheet-transfer-dialog::backdrop { background: rgba(15, 23, 42, 0.6); }
+.sheet-transfer-dialog:not([open]) { display: none; }
+.sheet-transfer-list { display: grid; gap: 16px; }
+.sheet-transfer-list fieldset { min-width: 0; }
+.sheet-transfer-list fieldset p { font-size: 12px; color: var(--muted); margin-bottom: 10px; }
+.sheet-transfer-list output { padding: 12px; font-weight: 600; }
+.sheet-error { color: var(--danger); }
+.modal-form .sheet-replacement-confirmation { display: flex; align-items: center; gap: 10px; }
+.modal-form .sheet-replacement-confirmation input { width: 18px; height: 18px; }
 .spreadsheet-cell-free .spreadsheet-cell-action {
   top: 50%;
   right: 7px;

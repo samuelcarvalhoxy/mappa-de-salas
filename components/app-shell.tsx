@@ -99,6 +99,7 @@ import type {
 import { useInstallPrompt, usePushNotifications } from "./pwa-hooks";
 import { Brand, Empty, Summary } from "./app-shell-parts";
 import { RoomMapSpreadsheet } from "./room-map-spreadsheet";
+import type { SheetTransfer } from "@/lib/spreadsheet-bookings";
 import { AlternateDatePicker } from "./alternate-date-picker";
 import { BulkCancelModal } from "./bulk-cancel-modal";
 import { RequestExpiryDialog, RequestOutcomeSummary, RequestOutcomesPanel } from "./request-outcomes";
@@ -813,6 +814,14 @@ export function AppShell() {
               canBookDirectly={canBookDirectly}
               canRequest={canRequest}
               canManageReservations={can("booking.manage_all")}
+              onSheetTransfer={async (transfer) => {
+                if (actionInFlight.current) throw new Error("Aguarde a operação em andamento.");
+                actionInFlight.current = true;
+                try {
+                  await api("/api/action", { action: "booking.sheet_transfer", ...transfer });
+                  await refresh(true);
+                } finally { actionInFlight.current = false; }
+              }}
               onSchedule={(seed) =>
                 setModal({
                   type: canBookDirectly ? "booking" : "request",
@@ -1691,6 +1700,7 @@ function SearchableUserSelect({
 }
 
 function RoomMap({
+  onSheetTransfer,
   state,
   selectedDate,
   onSelectedDateChange,
@@ -1704,6 +1714,7 @@ function RoomMap({
   onBulkCancel,
   onOpenAgenda,
 }: {
+  onSheetTransfer: (transfer: SheetTransfer) => Promise<void>;
   state: AppState;
   selectedDate: string;
   onSelectedDateChange: (date: string) => void;
@@ -2060,6 +2071,14 @@ function RoomMap({
         />
       ) : viewMode === "spreadsheet" ? (
         <RoomMapSpreadsheet
+          currentUserId={state.currentUser?.id || ""}
+          canCopy={canBookDirectly}
+          canCopyAll={Boolean(state.currentUser?.isGod || state.currentUser?.permissions.includes("booking.create_all"))}
+          canMoveOwn={Boolean(state.currentUser?.isGod || state.currentUser?.permissions.includes("booking.create_own"))}
+          onTransfer={async (transfer) => {
+            await onSheetTransfer(transfer);
+            setReloadDay((value) => value + 1);
+          }}
           startDate={spreadsheetStartDate}
           rooms={filtered}
           reservations={reservations}

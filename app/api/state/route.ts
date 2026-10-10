@@ -194,6 +194,8 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({
       configured: true,
       partial: true,
+      currentUser: { id: user.id, name: user.name, username: user.username, roleId: user.role_id,
+        roleName: user.role_name, roleColor: user.role_color, isGod: user.is_god, isOwnerGod: user.is_owner_god, permissions },
       rooms: rooms.map((room) => ({ id: room.id, name: room.name, location: room.location, kind: room.kind,
         capacity: Number(room.capacity), resources: room.resources, networkStatus: room.network_status,
         chairs: Number(room.chairs), tables: Number(room.tables), workstations: Number(room.workstations),

@@ -100,6 +100,9 @@ import { useInstallPrompt, usePushNotifications } from "./pwa-hooks";
 import { Brand, Empty, Summary } from "./app-shell-parts";
 import { RoomMapSpreadsheet } from "./room-map-spreadsheet";
 import { RoomResponsibilityForm } from "./room-responsibility-form";
+import { OfflinePendingRequests, PendingRequestBanner, PendingRequestEffects } from "./pending-request-attention";
+import { usePendingRequestAttention } from "./use-pending-request-attention";
+import { PENDING_DUTY_CACHE_KEY, DUTY_REMINDER_INTERVAL_MS, parsePendingDutyCache, pendingDutySnapshot, type PendingDutySnapshot } from "@/lib/pending-request-attention";
 import type { SheetTransfer, SheetCancellationEntry } from "@/lib/spreadsheet-bookings";
 import { AlternateDatePicker } from "./alternate-date-picker";
 import { BulkCancelModal } from "./bulk-cancel-modal";
@@ -252,6 +255,15 @@ export function AppShell() {
   const [sidebar, setSidebar] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [sheetView, setSheetView] = useState(false);
+  const [offlineSnapshot, setOfflineSnapshot] = useState<PendingDutySnapshot | null>(null);
+  const [networkOffline, setNetworkOffline] = useState(false);
+  const stateRef = useRef(state);
+  const authEpoch = useRef(0);
+  const attentionRootRef = useRef<HTMLDivElement>(null);
+  const requestNavRef = useRef<HTMLButtonElement>(null);
+  const rippleRef = useRef<HTMLDivElement>(null);
+  const dutySnapshot = useMemo(() => pendingDutySnapshot(state) || (!state.currentUser ? offlineSnapshot : null), [state, offlineSnapshot]);
+  const reminderVisible = usePendingRequestAttention({ snapshot: dutySnapshot, rootRef: attentionRootRef, buttonRef: requestNavRef, rippleRef });
   const [modal, setModal] = useState<{ type: string; data?: unknown } | null>(
     null,
   );
@@ -264,6 +276,12 @@ export function AppShell() {
     setError(message);
   }, []);
   const notifications = usePushNotifications(state.pushPublicKey, showError);
+  useEffect(() => { stateRef.current = state; }, [state]);
+
+  function clearDutyCache() {
+    try { localStorage.removeItem(PENDING_DUTY_CACHE_KEY); } catch { /* Storage may be unavailable. */ }
+    setOfflineSnapshot(null);
+  }
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -291,27 +309,44 @@ export function AppShell() {
   }, []);
 
   const refresh = useCallback(async (quiet = false, syncOnly = false) => {
+    if (syncOnly && !navigator.onLine) return;
     if (syncOnly && backgroundSyncInFlight.current) return;
+    const epoch = authEpoch.current;
     if (syncOnly) backgroundSyncInFlight.current = true;
     setSyncStatus("syncing");
     try {
       const payload = (await api(
         syncOnly ? "/api/state?mode=sync" : "/api/state",
       )) as Partial<AppState> & { partial?: boolean };
+      if (epoch !== authEpoch.current) return;
       if (payload.requestExpiryAlerts)
         payload.requestExpiryAlerts = payload.requestExpiryAlerts.filter((alert) => !acknowledgedExpiryIds.current.has(alert.id));
-      setState((current) =>
-        payload.partial
-          ? ({ ...current, ...payload } as AppState)
-          : (payload as AppState),
-      );
+      const next = payload.partial ? ({ ...stateRef.current, ...payload } as AppState) : (payload as AppState);
+      stateRef.current = next;
+      setState(next);
+      setOfflineSnapshot(null);
+      setNetworkOffline(false);
+      try {
+        const snapshot = pendingDutySnapshot(next);
+        if (snapshot) localStorage.setItem(PENDING_DUTY_CACHE_KEY,JSON.stringify(snapshot));
+        else localStorage.removeItem(PENDING_DUTY_CACHE_KEY);
+      } catch { /* Local alerts remain active when storage is unavailable. */ }
       setError("");
       const syncedAt = new Date();
       setLastSyncAt(syncedAt);
       setSyncTick(syncedAt.getTime());
       setSyncStatus("ready");
     } catch (e) {
+      if (epoch !== authEpoch.current) return;
       setSyncStatus("error");
+      if (e instanceof ApiError && (e.status === 401 || e.status === 403)) {
+        try { localStorage.removeItem(PENDING_DUTY_CACHE_KEY); } catch { /* No cached account is reused. */ }
+        setOfflineSnapshot(null);
+        stateRef.current = EMPTY;
+        setState(EMPTY);
+      } else if (!stateRef.current.currentUser && !(e instanceof ApiError)) {
+        try { setOfflineSnapshot(parsePendingDutyCache(localStorage.getItem(PENDING_DUTY_CACHE_KEY))); } catch { /* Offline summaries are optional. */ }
+      }
       if (!quiet)
         setError(e instanceof Error ? e.message : "Falha de conexão.");
     } finally {
@@ -327,13 +362,14 @@ export function AppShell() {
       const now = Date.now();
       if (
         document.visibilityState === "visible" &&
+        navigator.onLine &&
         now - lastVisibilityRefresh >= 10_000
       ) {
         lastVisibilityRefresh = now;
         void refresh(true, true);
       }
     };
-    const timer = window.setInterval(refreshWhenVisible, 60_000);
+    const timer = window.setInterval(refreshWhenVisible, DUTY_REMINDER_INTERVAL_MS);
     window.addEventListener("focus", refreshWhenVisible);
     document.addEventListener("visibilitychange", refreshWhenVisible);
     return () => {
@@ -344,13 +380,30 @@ export function AppShell() {
     };
   }, [refresh]);
   useEffect(() => {
+    const online = () => { setNetworkOffline(false); void refresh(true, true); };
+    const offline = () => setNetworkOffline(true);
+    const initial = window.setTimeout(() => setNetworkOffline(!navigator.onLine),0);
+    window.addEventListener("online",online);
+    window.addEventListener("offline",offline);
+    const cached = (event: StorageEvent) => {
+      if (event.key !== PENDING_DUTY_CACHE_KEY) return;
+      const snapshot = parsePendingDutyCache(event.newValue);
+      setOfflineSnapshot((current) => current && snapshot?.userId === current.userId ? snapshot : null);
+    };
+    window.addEventListener("storage",cached);
+    return () => { window.clearTimeout(initial); window.removeEventListener("online",online); window.removeEventListener("offline",offline); window.removeEventListener("storage",cached); };
+  }, [refresh]);
+  useEffect(() => {
     if (!("serviceWorker" in navigator)) return;
+    let pending = 0;
+    let lastPushRefresh = 0;
     const onExpirationPush = (event: MessageEvent) => {
-      if (event.data?.type === "request-auto-rejection" && document.visibilityState === "visible")
-        void refresh(true, true);
+      if (!["request-auto-rejection","booking-requests-changed"].includes(event.data?.type) || !navigator.onLine) return;
+      window.clearTimeout(pending);
+      pending = window.setTimeout(() => { lastPushRefresh = Date.now(); void refresh(true,true); },Math.max(250,5000-(Date.now()-lastPushRefresh)));
     };
     navigator.serviceWorker.addEventListener("message", onExpirationPush);
-    return () => navigator.serviceWorker.removeEventListener("message", onExpirationPush);
+    return () => { window.clearTimeout(pending); navigator.serviceWorker.removeEventListener("message", onExpirationPush); };
   }, [refresh]);
   useEffect(() => {
     const timer = window.setInterval(() => setSyncTick(Date.now()), 30_000);
@@ -363,7 +416,7 @@ export function AppShell() {
     if (!deadlines.length) return;
     const delay = Math.max(0, Math.min(...deadlines) - new Date(state.now).getTime()) + 100;
     const timer = window.setTimeout(() => {
-      if (document.visibilityState === "visible") void refresh(true, true);
+      if (document.visibilityState === "visible" && navigator.onLine) void refresh(true, true);
     }, Math.min(delay, 2_147_483_647));
     return () => window.clearTimeout(timer);
   }, [state.currentUser, state.requests, state.now, refresh]);
@@ -508,9 +561,14 @@ export function AppShell() {
       </div>
     );
   if (!state.configured) return <SetupScreen />;
-  if (!state.currentUser) return <LoginScreen onDone={() => refresh()} />;
+  if (!state.currentUser && offlineSnapshot) return <OfflinePendingRequests snapshot={offlineSnapshot}
+    rootRef={attentionRootRef} buttonRef={requestNavRef} rippleRef={rippleRef} reminderVisible={reminderVisible}
+    onReconnect={() => void refresh()} onClear={clearDutyCache} />;
+  if (!state.currentUser) return <LoginScreen onDone={() => { authEpoch.current += 1; clearDutyCache(); void refresh(); }} />;
 
   const user = state.currentUser;
+  const sidebarLocked = Boolean(dutySnapshot);
+  const effectiveSidebarCollapsed = !sidebarLocked && sidebarCollapsed;
   const can = (permission: Permission) =>
     user.isGod || user.permissions.includes(permission);
   const canBookDirectly =
@@ -619,14 +677,14 @@ export function AppShell() {
   };
 
   return (
-    <div className={`app-layout ${sidebarCollapsed ? "sidebar-collapsed" : ""} ${activeTab === "map" && sheetView ? "spreadsheet-focus" : ""}`}>
+    <div ref={attentionRootRef} className={`app-layout ${effectiveSidebarCollapsed ? "sidebar-collapsed" : ""} ${sidebarLocked ? "pending-duty" : ""} ${activeTab === "map" && sheetView ? "spreadsheet-focus" : ""}`}>
       <aside id="app-sidebar" className={`sidebar ${sidebar ? "open" : ""}`}>
         <div className="sidebar-head">
           <Brand />
           <button
             className="icon-btn mobile-only"
             type="button"
-            aria-label="Fechar menu"
+            aria-label={sidebarLocked ? "Recolher menu" : "Fechar menu"}
             onClick={() => setSidebar(false)}
           >
             <X size={20} />
@@ -640,7 +698,8 @@ export function AppShell() {
                 <button
                   type="button"
                   key={id}
-                  className={activeTab === id ? "active" : ""}
+                  ref={id === "requests" ? requestNavRef : undefined}
+                  className={`${activeTab === id ? "active" : ""} ${id === "requests" && sidebarLocked ? "responsible-pending" : ""}`}
                   aria-label={label}
                   aria-current={activeTab === id ? "page" : undefined}
                   title={label}
@@ -651,6 +710,7 @@ export function AppShell() {
                 >
                   <Icon size={19} />
                   <span>{label}</span>
+                  {id === "requests" && dutySnapshot && <b className="responsibility-count" aria-label={`${dutySnapshot.requests.length} sob sua responsabilidade`}>{dutySnapshot.requests.length}</b>}
                 </button>
               ))}
             </div>
@@ -688,8 +748,12 @@ export function AppShell() {
               title="Sair"
               aria-label="Sair"
               onClick={async () => {
+                authEpoch.current += 1;
                 await api("/api/auth", { action: "logout" });
-                refresh();
+                clearDutyCache();
+                stateRef.current = EMPTY;
+                setState(EMPTY);
+                void refresh();
               }}
             >
               <LogOut size={17} />
@@ -701,7 +765,7 @@ export function AppShell() {
         <button
           className="backdrop mobile-only"
           type="button"
-          aria-label="Fechar menu"
+          aria-label={sidebarLocked ? "Recolher menu" : "Fechar menu"}
           onClick={() => setSidebar(false)}
         />
       )}
@@ -710,13 +774,14 @@ export function AppShell() {
           <button
             className="icon-btn sidebar-toggle"
             type="button"
-            aria-label={sidebarCollapsed ? "Expandir barra lateral" : "Recolher barra lateral"}
-            title={sidebarCollapsed ? "Expandir barra lateral" : "Recolher barra lateral"}
-            aria-expanded={!sidebarCollapsed}
+            aria-label={effectiveSidebarCollapsed ? "Expandir barra lateral" : "Recolher barra lateral"}
+            title={sidebarLocked ? "A lateral permanece visível enquanto houver pedidos sob sua responsabilidade." : effectiveSidebarCollapsed ? "Expandir barra lateral" : "Recolher barra lateral"}
+            aria-expanded={!effectiveSidebarCollapsed}
+            disabled={sidebarLocked}
             aria-controls="app-sidebar"
             onClick={toggleSidebarCollapsed}
           >
-            {sidebarCollapsed ? <ChevronRight size={21} /> : <ChevronLeft size={21} />}
+            {effectiveSidebarCollapsed ? <ChevronRight size={21} /> : <ChevronLeft size={21} />}
           </button>
           <button
             className="icon-btn mobile-only"
@@ -802,6 +867,7 @@ export function AppShell() {
           </div>
         </header>
         <div className="content">
+          {dutySnapshot && <PendingRequestBanner snapshot={dutySnapshot} offline={networkOffline || syncStatus === "error"} onOpen={() => setActiveTab("requests")} />}
           {error && (
             <div className="alert global-alert error-shake" role="alert">
               <span>{error}</span>
@@ -1135,6 +1201,7 @@ export function AppShell() {
           }
         />
       )}
+      {dutySnapshot && <PendingRequestEffects rippleRef={rippleRef} reminderVisible={reminderVisible} count={dutySnapshot.requests.length} />}
       <RequestExpiryDialog
         alerts={state.requestExpiryAlerts || []}
         onAcknowledge={async (id) => {

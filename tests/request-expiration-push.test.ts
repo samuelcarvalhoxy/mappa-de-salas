@@ -27,5 +27,11 @@ test("push de rejeição automática notifica e avisa as abas abertas", async ()
   messages.length=0;
   listeners.push({data:{json:() => ({title:'Lembrete',tag:'pending-request-reminder'})},waitUntil:(value: Promise<unknown>) => { finished=value; }});
   await finished;
-  assert.deepEqual(messages,[]);
+  assert.deepEqual(messages,[JSON.stringify({type:'booking-requests-changed'})]);
+  for (const tag of ['booking-request','urgent-request-new']) {
+    messages.length=0;
+    listeners.push({data:{json:() => ({tag})},waitUntil:(value: Promise<unknown>) => { finished=value; }});
+    await finished;
+    assert.deepEqual(messages,[JSON.stringify({type:'booking-requests-changed'})]);
+  }
 });

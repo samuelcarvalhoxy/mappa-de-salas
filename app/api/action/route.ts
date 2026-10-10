@@ -163,8 +163,6 @@ export async function POST(request: NextRequest) {
   try {
     if (action.startsWith("request.")) await expireBookingRequests();
     if (action === "request.acknowledge_expiry") {
-      if (!requirePermission("booking.review"))
-        return fail("Sem permissão para analisar solicitações.", 403);
       const id = String(body.id || "");
       if (!/^[0-9a-f-]{36}$/i.test(id)) return fail("Aviso inválido.");
       const acknowledged = await db.query(ACKNOWLEDGE_EXPIRY_ALERT_SQL, [id, actor.id]);
@@ -1081,7 +1079,7 @@ export async function POST(request: NextRequest) {
         })
       )
         return fail(
-          "Você só pode atribuir ou remover permissões que já possui. Central de notificações e relatório de acessos são delegados somente por um God.",
+          "Você só pode atribuir ou remover permissões que já possui. Central de notificações, relatório de acessos e nomeação de responsáveis são delegados somente por um God.",
           403,
         );
       const willBeGod = existing[0]?.is_owner_god
@@ -1243,7 +1241,7 @@ export async function POST(request: NextRequest) {
           })
         )
           return fail(
-            "Você só pode atribuir ou remover permissões que já possui. Central de notificações e relatório de acessos são delegados somente por um God.",
+            "Você só pode atribuir ou remover permissões que já possui. Central de notificações, relatório de acessos e nomeação de responsáveis são delegados somente por um God.",
             403,
           );
         await db.query(
@@ -1260,7 +1258,7 @@ export async function POST(request: NextRequest) {
           })
         )
           return fail(
-            "Você só pode atribuir permissões que já possui. Central de notificações e relatório de acessos são delegados somente por um God.",
+            "Você só pode atribuir permissões que já possui. Central de notificações, relatório de acessos e nomeação de responsáveis são delegados somente por um God.",
             403,
           );
         await db.query(

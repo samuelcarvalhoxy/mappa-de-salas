@@ -75,11 +75,14 @@ WITH expired AS (
     ', e não obteve resposta. Pedido rejeitado. Motivo: Rejeição automática por omissão do Staff.' message
   FROM expired e JOIN users u ON u.id=e.requester_id LEFT JOIN rooms r ON r.id=e.room_id
 ), staff AS (
-  SELECT u.id FROM users u JOIN roles r ON r.id=u.role_id
+  SELECT DISTINCT m.id request_id,u.id user_id,m.message
+  FROM messages m JOIN room_review_responsibilities rr ON (m.room_id=rr.room_id OR m.room_id IS NULL)
+  JOIN rooms room ON room.id=rr.room_id AND room.active=true AND room.kind<>'virtual'
+  JOIN users u ON u.id=rr.user_id JOIN roles r ON r.id=u.role_id
   WHERE u.active=true AND u.deleted_at IS NULL AND (u.is_god=true OR r.permissions ? 'booking.review')
 ), alerts AS (
   INSERT INTO request_expiry_alerts(request_id,user_id,message,created_at)
-    SELECT m.id,s.id,m.message,now() FROM messages m CROSS JOIN staff s
+    SELECT request_id,user_id,message,now() FROM staff
     ON CONFLICT(request_id,user_id) DO NOTHING RETURNING user_id
 ), notices AS (
   INSERT INTO notifications(user_id,title,body,url)

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { after, before, beforeEach, test } from "node:test";
 import { readFileSync } from "node:fs";
 import { PGlite } from "@electric-sql/pglite";
+import { ROOM_REVIEW_RESPONSIBILITY_SCHEMA } from "../lib/room-review-responsibilities.ts";
 import { ACKNOWLEDGE_EXPIRY_ALERT_SQL, EXPIRE_BOOKING_REQUESTS_SQL, REQUEST_DECISION_STATS_SQL,
   REQUEST_END_SQL, REQUEST_EXPIRATION_SCHEMA } from "../lib/request-expiration-sql.ts";
 
@@ -16,7 +17,7 @@ before(async () => {
   await db.exec(`CREATE TABLE roles(id int PRIMARY KEY,permissions jsonb);
     CREATE TABLE users(id uuid PRIMARY KEY,name text,role_id int REFERENCES roles(id),active boolean DEFAULT true,
       deleted_at timestamptz,is_god boolean DEFAULT false);
-    CREATE TABLE rooms(id uuid PRIMARY KEY,name text);
+    CREATE TABLE rooms(id uuid PRIMARY KEY,name text,active boolean DEFAULT true,kind text DEFAULT 'physical');
     CREATE TABLE reservations(id uuid PRIMARY KEY DEFAULT gen_random_uuid(),room_id uuid REFERENCES rooms(id),
       user_id uuid REFERENCES users(id),reason text,starts_at timestamptz,ends_at timestamptz,shareable boolean,
       expected_people int,status text,created_by uuid,updated_at timestamptz);
@@ -31,13 +32,19 @@ before(async () => {
     INSERT INTO roles VALUES (1,'["booking.request"]'),(2,'["booking.review"]'),(3,'[]');
     INSERT INTO users(id,name,role_id,is_god) VALUES ('${requester}','Instrutor X',1,false),
       ('${staff}','Analista',2,false),('${god}','God',3,true);
-    INSERT INTO rooms VALUES ('${room}','Sala 12');`);
+    INSERT INTO rooms(id,name) VALUES ('${room}','Sala 12');`);
+  await db.exec(ROOM_REVIEW_RESPONSIBILITY_SCHEMA);
   await db.transaction(async (transaction) => {
     for (const statement of REQUEST_EXPIRATION_SCHEMA.split("\n-- next\n")) await transaction.query(statement);
   });
 });
 after(async () => { await db.close(); });
-beforeEach(async () => { await db.exec(`TRUNCATE booking_requests,reservations,request_decision_totals,request_expiry_alerts,notifications,audit_log CASCADE;`); });
+beforeEach(async () => {
+  await db.exec(`TRUNCATE booking_requests,reservations,request_decision_totals,request_expiry_alerts,notifications,audit_log,room_review_responsibilities CASCADE;
+    UPDATE users SET active=true,deleted_at=NULL;
+    UPDATE roles SET permissions='["booking.review"]' WHERE id=2;
+    INSERT INTO room_review_responsibilities(room_id,user_id,assigned_by) VALUES ('${room}','${staff}','${god}'),('${room}','${god}','${god}');`);
+});
 
 async function pending(dateExpression = "(now() AT TIME ZONE 'America/Bahia')::date-1", start = "14:20", end = "20:00", id = request) {
   await db.query(`INSERT INTO booking_requests(id,requester_id,room_id,requested_date,start_time,end_time,reason)
@@ -157,4 +164,57 @@ test("aprovação atrasada não reabre pedido que a expiração já rejeitou", a
   const date = (await db.query<{ date: string }>(`SELECT ((now() AT TIME ZONE 'America/Bahia')::date+1)::text date`)).rows[0].date;
   assert.equal((await db.query<{ approved_count: number }>(query,[room,'Treinamento',date,'14:20','20:00',false,1,'',staff,request,`${date}T14:20:00-03:00`,`${date}T20:00:00-03:00`,false])).rows[0].approved_count,0);
   assert.equal((await db.query(`SELECT * FROM reservations`)).rows.length,0);
+});
+
+test("apenas os responsáveis da sala recebem o aviso, sem privilégio implícito para God", async () => {
+  await db.query(`DELETE FROM room_review_responsibilities WHERE user_id=$1`,[god]);
+  const another = "00000000-0000-4000-8000-000000000009";
+  await db.query(`INSERT INTO rooms(id,name) VALUES ($1,'Outra sala') ON CONFLICT DO NOTHING`,[another]);
+  await db.query(`INSERT INTO room_review_responsibilities(room_id,user_id,assigned_by) VALUES ($1,$2,$2)`,[another,god]);
+  await pending();
+  const result = (await db.query<{ staff_ids: string[]; requester_ids: string[] }>(EXPIRE_BOOKING_REQUESTS_SQL)).rows[0];
+  assert.deepEqual(result.staff_ids,[staff]);
+  assert.deepEqual(result.requester_ids,[requester]);
+  assert.deepEqual((await db.query<{ user_id: string }>(`SELECT user_id FROM request_expiry_alerts`)).rows.map((row) => row.user_id),[staff]);
+});
+
+test("sala sem responsáveis continua expirando e contabilizando sem avisar todos os analistas", async () => {
+  await db.exec(`DELETE FROM room_review_responsibilities`);
+  await pending();
+  const result = (await db.query<{ expired_count: number; staff_ids: string[] }>(EXPIRE_BOOKING_REQUESTS_SQL)).rows[0];
+  assert.equal(result.expired_count,1);
+  assert.deepEqual(result.staff_ids,[]);
+  assert.equal((await db.query(`SELECT * FROM request_expiry_alerts`)).rows.length,0);
+  assert.equal((await db.query(`SELECT * FROM notifications WHERE user_id=$1`,[requester])).rows.length,1);
+  assert.equal((await db.query<{ decision_count: number }>(`SELECT decision_count::int FROM request_decision_totals`)).rows[0].decision_count,1);
+});
+
+test("pedidos sem sala avisam responsáveis das salas ativas uma única vez por pessoa", async () => {
+  const another = "00000000-0000-4000-8000-000000000008";
+  await db.query(`INSERT INTO rooms(id,name) VALUES ($1,'Sala 13') ON CONFLICT DO NOTHING`,[another]);
+  await db.query(`INSERT INTO room_review_responsibilities(room_id,user_id,assigned_by) VALUES ($1,$2,$3)`,[another,staff,god]);
+  await pending();
+  await db.exec(`UPDATE booking_requests SET room_id=NULL`);
+  await expire();
+  const alerts = (await db.query<{ user_id: string }>(`SELECT user_id FROM request_expiry_alerts`)).rows;
+  assert.deepEqual(alerts.map((alert) => alert.user_id).sort(),[staff,god].sort());
+  await db.exec(`DELETE FROM request_expiry_alerts; DELETE FROM booking_requests;
+    UPDATE rooms SET active=false WHERE id<>'${room}';
+    DELETE FROM room_review_responsibilities WHERE room_id='${room}' AND user_id='${staff}';`);
+  await pending();
+  await db.exec(`UPDATE booking_requests SET room_id=NULL`);
+  await expire();
+  assert.deepEqual((await db.query<{ user_id: string }>(`SELECT user_id FROM request_expiry_alerts`)).rows.map((alert) => alert.user_id),[god]);
+  await db.exec(`UPDATE rooms SET active=true`);
+});
+
+test("responsáveis inativos, excluídos ou sem permissão de análise não recebem novos avisos", async () => {
+  for (const change of ["UPDATE users SET active=false WHERE name='Analista'", "UPDATE users SET deleted_at=now() WHERE name='Analista'", "UPDATE roles SET permissions='[]' WHERE id=2"]) {
+    await db.exec("BEGIN");
+    try {
+      await db.exec(change);
+      await pending(); await expire();
+      assert.deepEqual((await db.query<{ user_id: string }>(`SELECT user_id FROM request_expiry_alerts`)).rows.map((row) => row.user_id),[god]);
+    } finally { await db.exec("ROLLBACK"); }
+  }
 });

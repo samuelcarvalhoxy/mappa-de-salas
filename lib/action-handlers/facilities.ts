@@ -1,6 +1,7 @@
 import type { NeonQueryFunction } from "@neondatabase/serverless";
 import { NextResponse } from "next/server";
 import type { Permission } from "@/lib/types";
+import { parseRoomResponsibilities, LOCK_ROOM_RESPONSIBILITIES_SQL, SAVE_ROOM_RESPONSIBILITIES_SQL } from "@/lib/room-review-responsibilities";
 
 type FacilityActionContext = {
   action: string;
@@ -25,6 +26,24 @@ export async function handleFacilityAction({
 }: FacilityActionContext) {
   const actorId = String(actor.id || "");
   const actorIsGod = Boolean(actor.is_god);
+
+  if (action === "room.assign_responsibles") {
+    if (!requirePermission("room.assign_responsibles"))
+      return fail("Somente um God ou um usuário autorizado pode nomear responsáveis pelas salas.", 403);
+    let selection;
+    try { selection = parseRoomResponsibilities(body); }
+    catch (error) { return fail(error instanceof Error ? error.message : "Seleção inválida."); }
+    const results = await db.transaction((tx) => [
+      tx.query("SET LOCAL lock_timeout = '5s'"),
+      tx.query(LOCK_ROOM_RESPONSIBILITIES_SQL, [selection.roomId]),
+      tx.query(SAVE_ROOM_RESPONSIBILITIES_SQL, [selection.roomId, selection.userIds, actorId]),
+    ], { isolationLevel: "ReadCommitted" });
+    const result = results[2][0];
+    if (!result.room_exists) return fail("Sala ativa não encontrada.", 404);
+    if (!result.can_assign) return fail("Você não tem permissão para nomear responsáveis.", 403);
+    if (!result.valid_reviewers) return fail("Todos os responsáveis precisam estar ativos e ter permissão para analisar solicitações. Nenhuma atribuição foi alterada.", 409);
+    return NextResponse.json({ ok: true });
+  }
 
   if (action === "development_team.save") {
     if (!actorIsGod)

@@ -55,7 +55,7 @@ self.addEventListener("push", (event) => {
         tag: data.tag || "mappa-update",
         data: { url: data.url || "/" },
       }),
-      data.tag === "request-auto-rejection"
+      (data.tag === "request-auto-rejection" || data.tag === "request-auto-result")
         ? self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((windows) => {
             windows.forEach((client) => client.postMessage({ type: "request-auto-rejection" }));
           })

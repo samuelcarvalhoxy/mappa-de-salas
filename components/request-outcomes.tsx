@@ -41,7 +41,7 @@ export function RequestExpiryDialog({ alerts, onAcknowledge }: {
         </div></div>
         <div className="modal-form">
           <p id={descriptionId}>{alert.message}</p>
-          <p className="field-help">Este aviso permanece até você clicar em OK. Cada analista confirma sua própria ciência.</p>
+          <p className="field-help">Este aviso permanece até você clicar em OK. Cada responsável confirma sua própria ciência.</p>
           {error && <p className="form-error" role="alert">{error}</p>}
           <div className="modal-actions">
             <button ref={button} type="button" className="btn btn-primary" aria-disabled={busy} onClick={() => { if (!busy) void acknowledge(); }}>

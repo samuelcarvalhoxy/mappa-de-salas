@@ -20,6 +20,11 @@ test("push de rejeição automática notifica e avisa as abas abertas", async ()
   assert.deepEqual(notifications,['Rejeição automática por omissão do Staff.']);
   assert.deepEqual(messages,[JSON.stringify({type:'request-auto-rejection'})]);
   messages.length=0;
+  listeners.push({data:{json:() => ({title:'Solicitação rejeitada automaticamente',tag:'request-auto-result'})},waitUntil:(value: Promise<unknown>) => { finished=value; }});
+  await finished;
+  assert.deepEqual(messages,[JSON.stringify({type:'request-auto-rejection'})]);
+  assert.equal(notifications.at(-1),'Solicitação rejeitada automaticamente');
+  messages.length=0;
   listeners.push({data:{json:() => ({title:'Lembrete',tag:'pending-request-reminder'})},waitUntil:(value: Promise<unknown>) => { finished=value; }});
   await finished;
   assert.deepEqual(messages,[]);

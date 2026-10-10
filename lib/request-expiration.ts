@@ -10,11 +10,18 @@ export async function expireBookingRequests() {
     const ids = (value: unknown): string[] => Array.isArray(value) ? value.map(String) : [];
     // The persistent in-app alert is delivered without waiting for the push provider.
     after(async () => {
-      await pushToUsers([...new Set([...ids(rows[0].staff_ids), ...ids(rows[0].requester_ids)])], {
-        title: "Rejeição automática por omissão do Staff.",
-        body: `${expired} pedido(s) passaram do horário final sem resposta. Abra o Mappa para visualizar os detalhes.`,
-        url: "/?tab=requests", tag: "request-auto-rejection",
-      });
+      await Promise.all([
+        pushToUsers(ids(rows[0].staff_ids), {
+          title: "Rejeição automática por omissão do Staff.",
+          body: "Solicitações sob sua responsabilidade passaram do horário final sem resposta. Abra o Mappa para visualizar os detalhes.",
+          url: "/?tab=requests", tag: "request-auto-rejection",
+        }),
+        pushToUsers(ids(rows[0].requester_ids), {
+          title: "Solicitação rejeitada automaticamente",
+          body: "O período de utilização solicitado terminou sem uma decisão. Consulte os detalhes da sua solicitação.",
+          url: "/?tab=requests", tag: "request-auto-result",
+        }),
+      ]);
     });
   }
   return { expired };

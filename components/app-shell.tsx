@@ -99,6 +99,7 @@ import type {
 import { useInstallPrompt, usePushNotifications } from "./pwa-hooks";
 import { Brand, Empty, Summary } from "./app-shell-parts";
 import { RoomMapSpreadsheet } from "./room-map-spreadsheet";
+import { RoomResponsibilityForm } from "./room-responsibility-form";
 import type { SheetTransfer, SheetCancellationEntry } from "@/lib/spreadsheet-bookings";
 import { AlternateDatePicker } from "./alternate-date-picker";
 import { BulkCancelModal } from "./bulk-cancel-modal";
@@ -135,6 +136,7 @@ const EMPTY: AppState = {
   feedbackReports: [],
   notifications: [],
   requestExpiryAlerts: [],
+  roomReviewerOptions: [],
   notificationTemplates: [],
   notificationBroadcasts: [],
   shifts: [],
@@ -150,6 +152,7 @@ const PERMISSION_LABELS: Record<Permission, string> = {
   "booking.checkout_own": "Finalizar antecipadamente a própria utilização",
   "booking.checkout_all": "Finalizar antecipadamente qualquer utilização",
   "room.manage": "Cadastrar e editar salas",
+  "room.assign_responsibles": "Nomear responsáveis pelas aprovações de salas",
   "issue.resolve": "Resolver problemas reportados nas salas",
   "notification.send": "Enviar notificações e administrar modelos",
   "access.report": "Consultar relatório de acessos",
@@ -543,7 +546,7 @@ export function AppShell() {
       group: "GERAL",
       show: canRequest || can("booking.review"),
     },
-    { id: "rooms", label: "Salas", icon: DoorOpen, group: "GESTÃO", show: can("room.manage") },
+    { id: "rooms", label: "Salas", icon: DoorOpen, group: "GESTÃO", show: can("room.manage") || can("room.assign_responsibles") },
     {
       id: "users",
       label: "Usuários",
@@ -943,9 +946,12 @@ export function AppShell() {
               }
             />
           )}
-          {activeTab === "rooms" && (
+          {activeTab === "rooms" && (can("room.manage") || can("room.assign_responsibles")) && (
             <RoomsAdmin
               state={state}
+              canManage={can("room.manage")}
+              canAssign={can("room.assign_responsibles")}
+              onAssign={(room) => setModal({ type: "room-responsibles", data: room })}
               onNew={() => setModal({ type: "room" })}
               onEdit={(room) => setModal({ type: "room", data: room })}
               onDisable={(room) =>
@@ -1129,7 +1135,7 @@ export function AppShell() {
           }
         />
       )}
-      {can("booking.review") && <RequestExpiryDialog
+      <RequestExpiryDialog
         alerts={state.requestExpiryAlerts || []}
         onAcknowledge={async (id) => {
           await api("/api/action", { action: "request.acknowledge_expiry", id });
@@ -1137,7 +1143,23 @@ export function AppShell() {
           setState((current) => ({ ...current, requestExpiryAlerts: current.requestExpiryAlerts.filter((alert) => alert.id !== id) }));
           await refresh(true, true);
         }}
-      />}
+      />
+      {modal?.type === "room-responsibles" && can("room.assign_responsibles") && <Modal
+        title={`Responsáveis por ${(modal.data as Room).name}`}
+        subtitle="Atribua a responsabilidade pelo fluxo de aprovação e rejeição."
+        onClose={() => setModal(null)}>
+        <RoomResponsibilityForm room={modal.data as Room} reviewers={state.roomReviewerOptions || []}
+          onClose={() => setModal(null)} onSave={async (userIds) => {
+            if (actionInFlight.current) throw new Error("Aguarde a operação em andamento.");
+            actionInFlight.current = true;
+            try {
+              await api("/api/action", { action: "room.assign_responsibles", roomId: (modal.data as Room).id, userIds });
+              setModal(null);
+              setToast("Responsáveis da sala atualizados.");
+              await refresh(true);
+            } finally { actionInFlight.current = false; }
+          }} />
+      </Modal>}
       {modal?.type === "room" && (
         <RoomModal
           room={modal.data as Room | undefined}
@@ -2826,6 +2848,7 @@ function RequestsView({
   onAcknowledge: (request: BookingRequest) => void;
 }) {
   const [recordType, setRecordType] = useState<"requests" | "issues">("requests");
+  const [responsibilityFilter, setResponsibilityFilter] = useState("all");
   const [order, setOrder] = useState<"newest" | "oldest">("newest");
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
@@ -2837,6 +2860,9 @@ function RequestsView({
     (request) => request.status === "pending",
   ).length;
   const normalizedUser = userFilter.trim().toLocaleLowerCase("pt-BR");
+  const roomResponsibles = new Map(state.rooms.map((room) => [room.id, (room.approvalResponsibles || []).filter((person) => person.eligible)]));
+  const allResponsibles = [...new Map([...roomResponsibles.values()].flat().map((person) => [person.id, person])).values()];
+  const responsiblesFor = (roomId: string | null) => roomId ? roomResponsibles.get(roomId) || [] : allResponsibles;
   const filteredRequests = [...state.requests]
     .filter(
       (request) =>
@@ -2844,6 +2870,7 @@ function RequestsView({
         (!to || request.requestedDate <= to) &&
         (roomFilter === "all" || request.roomId === roomFilter) &&
         (statusFilter === "all" || request.status === statusFilter) &&
+        (responsibilityFilter === "all" || responsiblesFor(request.roomId).some((person) => person.id === state.currentUser?.id)) &&
         (!normalizedUser ||
           request.requesterName.toLocaleLowerCase("pt-BR").includes(normalizedUser)) &&
         (!timeFilter.trim() ||
@@ -2900,6 +2927,7 @@ function RequestsView({
         <label>Data final<input type="date" min={from} value={to} onChange={(event) => setTo(event.target.value)} /></label>
         <label>Usuário<input value={userFilter} onChange={(event) => setUserFilter(event.target.value)} placeholder="Nome" /></label>
         <label>Sala<select value={roomFilter} onChange={(event) => setRoomFilter(event.target.value)}><option value="all">Todas</option>{state.rooms.map((room) => <option key={room.id} value={room.id}>{room.name}</option>)}</select></label>
+        {canReview && recordType === "requests" && <label>Responsabilidade<select aria-label="Responsabilidade" value={responsibilityFilter} onChange={(event) => setResponsibilityFilter(event.target.value)}><option value="all">Todas</option><option value="mine">Sob minha responsabilidade</option></select></label>}
         {recordType === "requests" && <label>Horário<input value={timeFilter} onChange={(event) => setTimeFilter(event.target.value)} placeholder="08:00" /></label>}
         <label>Status<select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}><option value="all">Todos</option>{recordType === "requests" ? <><option value="pending">Pendente</option><option value="approved">Aprovada</option><option value="rejected">Rejeitada</option><option value="cancelled">Cancelada</option></> : <><option value="open">Aberto</option><option value="resolved">Resolvido</option></>}</select></label>
         <label>Ordenação<select value={order} onChange={(event) => setOrder(event.target.value as typeof order)}><option value="newest">Mais recentes</option><option value="oldest">Mais antigas</option></select></label>
@@ -2938,6 +2966,8 @@ function RequestsView({
                   </span>
                 </div>
                 <p className="request-reason">{request.reason}</p>
+                {canReview && request.status === "pending" && <p className="field-help">Responsáveis: {responsiblesFor(request.roomId).map((person) => person.name).join(", ") || "Nenhum atribuído"}
+                  {responsiblesFor(request.roomId).some((person) => person.id === state.currentUser?.id) && " · Sob sua responsabilidade"}</p>}
                 {request.shareable && (
                   <span className="share-tag">Aceita compartilhar</span>
                 )}
@@ -3009,11 +3039,17 @@ function RequestsView({
 
 function RoomsAdmin({
   state,
+  canManage,
+  canAssign,
+  onAssign,
   onNew,
   onEdit,
   onDisable,
 }: {
   state: AppState;
+  canManage: boolean;
+  canAssign: boolean;
+  onAssign: (r: Room) => void;
   onNew: () => void;
   onEdit: (r: Room) => void;
   onDisable: (r: Room) => void;
@@ -3023,11 +3059,12 @@ function RoomsAdmin({
       <div className="panel-head">
         <div>
           <h2>{state.rooms.length} ambientes ativos</h2>
-          <p>Cadastre salas físicas ou outras localidades presenciais.</p>
+          <p>Gerencie as salas e os responsáveis pelo fluxo de reservas.</p>
+          <p className="field-help">Pedidos sem sala definida avisam os responsáveis pelas salas ativas. Sem atribuição, a rejeição automática não gera aviso de omissão para analistas.</p>
         </div>
-        <button className="btn btn-primary" onClick={onNew}>
+        {canManage && <button className="btn btn-primary" onClick={onNew}>
           <Plus size={17} /> Nova sala
-        </button>
+        </button>}
       </div>
       <div className="data-list">
         {state.rooms.map((room) => (
@@ -3038,6 +3075,9 @@ function RoomsAdmin({
             <div className="grow">
               <strong>{room.name}</strong>
               <span>{room.location || "Sem localidade"}</span>
+              <span className="room-responsibles">Responsáveis: {room.approvalResponsibles?.length
+                ? room.approvalResponsibles.map((person) => `${person.name}${person.eligible ? "" : " (sem acesso à análise)"}`).join(", ")
+                : "Nenhum atribuído"}</span>
             </div>
             <div className="row-stat">
               <span>Capacidade</span>
@@ -3048,10 +3088,11 @@ function RoomsAdmin({
                 ? "Física"
                 : "Outra"}
             </span>
-            <button className="btn btn-soft" onClick={() => onEdit(room)}>
+            {canAssign && <button className="btn btn-soft" onClick={() => onAssign(room)} aria-label={`Responsáveis por ${room.name}`}>Responsáveis</button>}
+            {canManage && <button className="btn btn-soft" onClick={() => onEdit(room)}>
               Editar
-            </button>
-            <button
+            </button>}
+            {canManage && <button
               className="icon-btn danger"
               title="Desativar"
               type="button"
@@ -3059,7 +3100,7 @@ function RoomsAdmin({
               onClick={() => onDisable(room)}
             >
               <X size={17} />
-            </button>
+            </button>}
           </div>
         ))}
       </div>
@@ -6034,7 +6075,7 @@ function RoleModal({
                   <strong>{PERMISSION_LABELS[p]}</strong>
                   {!editable && (
                     <small>
-                      {p === "notification.send" || p === "access.report"
+                      {p === "notification.send" || p === "access.report" || p === "room.assign_responsibles"
                         ? "Delegação exclusiva de God"
                         : "Você não possui esta permissão"}
                     </small>

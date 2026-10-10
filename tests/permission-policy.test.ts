@@ -53,10 +53,11 @@ test("permite ao gestor alterar somente permissões que ele possui", () => {
   );
 });
 
-test("reserva notificações e relatório de acessos à delegação por God", () => {
+test("reserva notificações, relatório de acessos e nomeação de responsáveis à delegação por God", () => {
   for (const permission of [
     "notification.send",
     "access.report",
+    "room.assign_responsibles",
   ] as Permission[]) {
     assert.equal(
       canDirectlyManagePermission(permission, [permission], false),

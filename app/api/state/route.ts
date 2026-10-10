@@ -9,6 +9,7 @@ import {
 } from "@/lib/db";
 import { getPushConfiguration } from "@/lib/settings";
 import { expireBookingRequests } from "@/lib/request-expiration";
+import { ROOM_RESPONSIBLE_USERS_SQL, ROOM_REVIEWER_OPTIONS_SQL } from "@/lib/room-review-responsibilities";
 
 export const dynamic = "force-dynamic";
 
@@ -25,6 +26,7 @@ export async function GET(request: NextRequest) {
     feedbackReports: [],
     notifications: [],
     requestExpiryAlerts: [],
+    roomReviewerOptions: [],
     notificationTemplates: [],
     notificationBroadcasts: [],
     shifts: [],
@@ -68,6 +70,7 @@ export async function GET(request: NextRequest) {
     user.is_god || permissions.includes("notification.send");
   const canAccessReport =
     user.is_god || permissions.includes("access.report");
+  const canAssignResponsibles = user.is_god || permissions.includes("room.assign_responsibles");
   const [
     rooms,
     reservations,
@@ -83,12 +86,13 @@ export async function GET(request: NextRequest) {
     notificationTemplates,
     notificationBroadcasts,
     requestExpiryAlerts,
+    roomReviewerOptions,
   ] = await Promise.all([
-      syncOnly
-        ? Promise.resolve([])
-        : db.query(
-            `SELECT id,name,location,kind,capacity,resources,network_status,chairs,tables,workstations,active
-             FROM rooms WHERE active=true AND kind<>'virtual' ORDER BY location,name`,
+      db.query(
+            `SELECT id,name,location,kind,capacity,resources,network_status,chairs,tables,workstations,active,
+             COALESCE((SELECT jsonb_agg(jsonb_build_object('id',rr.id,'name',rr.name,'eligible',rr.eligible) ORDER BY rr.name,rr.id)
+               FROM (${ROOM_RESPONSIBLE_USERS_SQL}) rr WHERE rr.room_id=room.id),'[]'::jsonb) approval_responsibles
+             FROM rooms room WHERE active=true AND kind<>'virtual' ORDER BY location,name`,
           ),
       db.query(`SELECT rs.id,rs.room_id,rs.user_id,u.name user_name,u.username user_username,rs.reason,rs.starts_at,rs.ends_at,rs.shareable,
       rs.expected_people,rs.status,rs.created_by,c.name creator_name,rs.series_id FROM reservations rs JOIN users u ON u.id=rs.user_id
@@ -182,15 +186,18 @@ export async function GET(request: NextRequest) {
              WHERE nb.created_at>=now()-interval '90 days' ORDER BY nb.created_at DESC`,
           )
         : Promise.resolve([]),
-      canReviewRequests
-        ? db.query(`SELECT id,request_id,message,created_at FROM request_expiry_alerts
-            WHERE user_id=$1 AND acknowledged_at IS NULL ORDER BY created_at,id`, [user.id])
-        : Promise.resolve([]),
+      db.query(`SELECT id,request_id,message,created_at FROM request_expiry_alerts
+            WHERE user_id=$1 AND acknowledged_at IS NULL ORDER BY created_at,id`, [user.id]),
+      !syncOnly && canAssignResponsibles ? db.query(ROOM_REVIEWER_OPTIONS_SQL) : Promise.resolve([]),
     ]);
   if (syncOnly)
     return NextResponse.json({
       configured: true,
       partial: true,
+      rooms: rooms.map((room) => ({ id: room.id, name: room.name, location: room.location, kind: room.kind,
+        capacity: Number(room.capacity), resources: room.resources, networkStatus: room.network_status,
+        chairs: Number(room.chairs), tables: Number(room.tables), workstations: Number(room.workstations),
+        active: room.active, approvalResponsibles: room.approval_responsibles })),
       requestExpiryAlerts: requestExpiryAlerts.map((alert) => ({ id: alert.id, requestId: alert.request_id, message: alert.message, createdAt: alert.created_at })),
       now: new Date().toISOString(),
       reservations: reservations.map((r) => ({
@@ -257,6 +264,7 @@ export async function GET(request: NextRequest) {
     configured: true,
     now: new Date().toISOString(),
     requestExpiryAlerts: requestExpiryAlerts.map((alert) => ({ id: alert.id, requestId: alert.request_id, message: alert.message, createdAt: alert.created_at })),
+    roomReviewerOptions: roomReviewerOptions.map((reviewer) => ({ id: reviewer.id, name: reviewer.name, username: reviewer.username, roleName: reviewer.role_name })),
     currentUser: {
       id: user.id,
       name: user.name,
@@ -280,6 +288,7 @@ export async function GET(request: NextRequest) {
       tables: Number(r.tables),
       workstations: Number(r.workstations),
       active: r.active,
+      approvalResponsibles: r.approval_responsibles,
     })),
     reservations: reservations.map((r) => ({
       id: r.id,

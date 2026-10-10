@@ -7,6 +7,7 @@ export const PERMISSIONS = [
   "booking.checkout_own",
   "booking.checkout_all",
   "room.manage",
+  "room.assign_responsibles",
   "issue.resolve",
   "notification.send",
   "access.report",
@@ -44,6 +45,7 @@ export type Room = {
   tables: number;
   workstations: number;
   active: boolean;
+  approvalResponsibles?: { id: string; name: string; eligible: boolean }[];
 };
 
 export type Reservation = {
@@ -197,6 +199,7 @@ export type AppState = {
   feedbackReports: FeedbackReport[];
   notifications: SystemNotification[];
   requestExpiryAlerts: { id: string; requestId: string; message: string; createdAt: string }[];
+  roomReviewerOptions: { id: string; name: string; username: string; roleName: string }[];
   notificationTemplates: NotificationTemplate[];
   notificationBroadcasts: NotificationBroadcast[];
   shifts: { id: string; name: string; startTime: string; endTime: string }[];

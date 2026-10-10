@@ -12,9 +12,18 @@ Produção: https://mappa-de-salas.vercel.app/
 - Reservas únicas, por período ou em até 30 datas alternadas, sempre com domingo indisponível.
 - Validação de horários passados e suporte ao turno Extra que atravessa a meia-noite.
 - Solicitações com confirmação de recebimento e estimativa baseada nos últimos 90 dias.
+- Responsáveis por sala para aprovar e rejeitar pedidos, com nomeação por GOD ou permissão delegada e avisos de omissão direcionados.
 - Histórico, relatórios e auditoria com retenção detalhada de 90 dias.
 
 ## Desenvolvimento
+
+### Responsabilidade pelo fluxo de solicitações
+
+Em Salas, o botão Responsáveis permite nomear uma ou mais pessoas ativas com `booking.review` ou acesso GOD. GODs podem delegar `room.assign_responsibles` em Perfis e atribuir esse perfil ao usuário. Essa permissão permite nomear responsáveis sem conceder cadastro de salas, análise de pedidos ou delegação da própria permissão.
+
+Outros analistas continuam podendo decidir qualquer pedido com `booking.review`. As solicitações mostram seus responsáveis e podem ser filtradas por “Sob minha responsabilidade”. A rejeição automática mantém as estatísticas e o resultado enviado ao solicitante; o aviso persistente de omissão e seu push chegam somente aos responsáveis ativos e habilitados da sala. GODs não são destinatários implícitos. Pedidos sem sala definida avisam os responsáveis de todas as salas ativas, uma vez por pessoa. Sem atribuições, o pedido expira normalmente e nenhum analista recebe o aviso de omissão.
+
+As atribuições e alterações ficam na auditoria. Pessoas que perdem acesso à análise são sinalizadas na gestão e deixam de receber novos avisos. Avisos já emitidos continuam com os responsáveis que os receberam, até o OK individual, preservando a ciência do ocorrido.
 
 ### Interação com a planilha
 

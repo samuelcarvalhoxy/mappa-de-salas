@@ -2982,6 +2982,13 @@ main {
 .modal-form .sheet-replacement-confirmation input { width: 18px; height: 18px; }
 
 .room-map .toolbar[hidden] { display: none; }
+.room-responsibility-form .responsibility-options { max-height: 340px; overflow-y: auto; padding: 8px; border: 1px solid var(--line); border-radius: 10px; }
+.room-responsibility-form .responsibility-options legend { padding: 0 6px; font-size: 12px; }
+.room-responsibility-form .check-row { display: flex; align-items: center; gap: 10px; margin: 0; }
+.room-responsibility-form .check-row input { width: 18px; height: 18px; flex-shrink: 0; }
+.room-responsibility-form .check-row span { display: grid; gap: 3px; }
+.room-responsibility-form .check-row small { color: var(--muted); }
+.data-row .room-responsibles { white-space: normal; max-width: 580px; font-size: 11px; }
 .sheet-export-actions { margin-left: auto; display: flex; gap: 6px; }
 .sheet-help { position: relative; font-size: 11px; }
 .sheet-help summary { cursor: pointer; padding: 7px; }

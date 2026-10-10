@@ -3,6 +3,7 @@ import bcrypt from "bcryptjs";
 import type { Permission } from "./types";
 import { SECURITY_FIELDS } from "./security-options";
 import { REQUEST_EXPIRATION_SCHEMA } from "./request-expiration-sql";
+import { ROOM_REVIEW_RESPONSIBILITY_SCHEMA } from "./room-review-responsibilities";
 
 let client: NeonQueryFunction<false, false> | null = null;
 let ready: Promise<void> | null = null;
@@ -227,6 +228,7 @@ async function initialize() {
     month date NOT NULL, actor_key text NOT NULL, action text NOT NULL, event_count int NOT NULL DEFAULT 0,
     PRIMARY KEY(month,actor_key,action)
   )`);
+  await db.transaction(ROOM_REVIEW_RESPONSIBILITY_SCHEMA.split("\n-- next\n").map((statement) => db.query(statement)));
   // All schema changes and the one-time counter backfill commit atomically.
   await db.transaction(REQUEST_EXPIRATION_SCHEMA.split("\n-- next\n").map((statement) => db.query(statement)));
 
@@ -298,7 +300,7 @@ async function initialize() {
     );
   }
   await db.query(
-    `UPDATE roles SET permissions=(SELECT jsonb_agg(DISTINCT value) FROM jsonb_array_elements(permissions || '["security.reset","user.delete","stats.view","booking.request","booking.review","issue.resolve","booking.checkout_own","booking.checkout_all","notification.send","access.report"]'::jsonb)) WHERE name='God'`,
+    `UPDATE roles SET permissions=(SELECT jsonb_agg(DISTINCT value) FROM jsonb_array_elements(permissions || '["security.reset","user.delete","stats.view","booking.request","booking.review","issue.resolve","booking.checkout_own","booking.checkout_all","notification.send","access.report","room.assign_responsibles"]'::jsonb)) WHERE name='God'`,
   );
   await db.query(
     `UPDATE roles SET permissions=COALESCE((SELECT jsonb_agg(value) FROM jsonb_array_elements(permissions - 'room.occupy' - 'room.release_own' - 'room.manage_all')), '[]'::jsonb)`,

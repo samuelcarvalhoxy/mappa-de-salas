@@ -3,6 +3,7 @@ import type { Permission } from "./types";
 export const GOD_MANAGED_PERMISSIONS = [
   "notification.send",
   "access.report",
+  "room.assign_responsibles",
 ] as const satisfies readonly Permission[];
 
 const godManagedPermissions = new Set<Permission>(GOD_MANAGED_PERMISSIONS);

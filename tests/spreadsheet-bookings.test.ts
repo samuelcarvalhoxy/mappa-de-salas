@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import { after, before, beforeEach, test } from "node:test";
 import { PGlite } from "@electric-sql/pglite";
 import type { Reservation, Room } from "../lib/types.ts";
-import { captureSheetSelection, prepareSheetTransfer, parseSheetTransfer, changeSheetEntryStart } from "../lib/spreadsheet-bookings.ts";
-import { SHEET_TRANSFER_LOCK_SQL, SHEET_TRANSFER_SQL } from "../lib/spreadsheet-bookings-sql.ts";
+import { captureSheetSelection, prepareSheetTransfer, parseSheetTransfer, changeSheetEntryStart, sheetCancellationEntries, parseSheetCancellation } from "../lib/spreadsheet-bookings.ts";
+import { SHEET_TRANSFER_LOCK_SQL, SHEET_TRANSFER_SQL, SHEET_CANCEL_SELECTION_SQL } from "../lib/spreadsheet-bookings-sql.ts";
 
 const actor = "00000000-0000-4000-8000-000000000001";
 const other = "00000000-0000-4000-8000-000000000002";
@@ -177,4 +177,45 @@ test("move duas reservas trocando salas sem cancelar as reservas da própria sel
   assert.equal(result.displaced_count,0);
   const rows = (await db.query<{ id: string; room_id: string }>(`SELECT id,room_id FROM reservations ORDER BY id`)).rows;
   assert.deepEqual(rows,[{id:idA,room_id:roomB},{id:idB,room_id:roomA}]);
+});
+
+async function cancelSelection(sources = [reservation], canManage = true) {
+  const entries = sources.flatMap((source) => sheetCancellationEntries(clipboard("copy", source)));
+  return db.transaction(async (tx) => {
+    await tx.query(SHEET_TRANSFER_LOCK_SQL);
+    return (await tx.query<{ cancelled_count: number; invalid_count: number }>(SHEET_CANCEL_SELECTION_SQL,
+      [JSON.stringify(entries),actor,canManage])).rows[0];
+  });
+}
+test("exclusão rápida exige confirmação explícita e não admite IDs repetidos", () => {
+  const entries = sheetCancellationEntries(clipboard());
+  assert.throws(() => parseSheetCancellation({ entries }), /Confirme/);
+  assert.throws(() => parseSheetCancellation({ entries: [entries[0],entries[0]], confirmed: true }), /repetidos/);
+  assert.equal(parseSheetCancellation({entries,confirmed:true}).length,1);
+});
+test("DEL cancela a seleção inteira e preserva IDs, histórico, auditoria e notificações", async () => {
+  const sourceB = { ...reservation, id:idB, roomId:roomB };
+  await db.query(`INSERT INTO reservations(id,room_id,user_id,reason,starts_at,ends_at) VALUES ($1,$2,$3,$4,$5,$6)`,
+    [idB,roomB,other,sourceB.reason,sourceB.startsAt,sourceB.endsAt]);
+  const result = await cancelSelection([reservation,sourceB]);
+  assert.equal(result.cancelled_count,2);
+  assert.equal((await db.query(`SELECT id FROM reservations WHERE status='cancelled'`)).rows.length,2);
+  assert.deepEqual(await counts(),{reservations:2,audits:1,notifications:1});
+});
+test("seleção com reserva de outra pessoa não permite exclusão parcial ao usuário comum", async () => {
+  const own = { ...reservation,id:idB,userId:actor };
+  await db.query(`INSERT INTO reservations(id,room_id,user_id,reason,starts_at,ends_at) VALUES ($1,$2,$3,$4,$5,$6)`,
+    [idB,roomA,actor,own.reason,own.startsAt,own.endsAt]);
+  assert.equal((await cancelSelection([own,reservation],false)).cancelled_count,0);
+  assert.deepEqual(await counts(),{reservations:2,audits:0,notifications:0});
+  assert.equal((await cancelSelection([own],false)).cancelled_count,1);
+  assert.equal((await db.query(`SELECT id FROM reservations WHERE id=$1 AND status='reserved'`,[idA])).rows.length,1);
+});
+test("DEL recusa reservas alteradas ou já encerradas sem gerar alterações e notificações", async () => {
+  await db.query(`UPDATE reservations SET reason='Edição concorrente' WHERE id=$1`,[idA]);
+  assert.equal((await cancelSelection()).cancelled_count,0);
+  await db.query(`UPDATE reservations SET reason=$2,starts_at='2000-01-01T09:20:00-03:00',ends_at='2000-01-01T10:20:00-03:00' WHERE id=$1`,[idA,reservation.reason]);
+  const old = {...reservation,startsAt:"2000-01-01T09:20:00-03:00",endsAt:"2000-01-01T10:20:00-03:00"};
+  assert.equal((await cancelSelection([old])).cancelled_count,0);
+  assert.deepEqual(await counts(),{reservations:1,audits:0,notifications:0});
 });

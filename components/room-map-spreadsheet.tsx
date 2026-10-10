@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   CalendarPlus,
   CalendarRange,
@@ -10,6 +10,7 @@ import {
   Scissors,
   ClipboardPaste,
   GripVertical,
+  Trash2,
   Pencil,
   X,
 } from "lucide-react";
@@ -17,7 +18,7 @@ import { MAP_SHIFTS, mapShiftBounds, type MapShift } from "@/lib/map-shifts";
 import { isSundayDate, startOfWeekMonday } from "@/lib/calendar-utils";
 import type { Reservation, Room } from "@/lib/types";
 import { addDays, time } from "./app-shell-utils";
-import { sheetBounds, type SheetPosition, type SheetTransfer } from "@/lib/spreadsheet-bookings";
+import { sheetBounds, type SheetCancellationEntry, type SheetPosition, type SheetTransfer } from "@/lib/spreadsheet-bookings";
 import { useSpreadsheetEditing, type SpreadsheetEditing } from "./use-spreadsheet-editing";
 import { SheetTransferDialog } from "./sheet-transfer-dialog";
 
@@ -452,6 +453,7 @@ function SpreadsheetShift({
 }
 
 export function RoomMapSpreadsheet({
+  onDelete,
   currentUserId,
   canCopy,
   canCopyAll,
@@ -469,6 +471,7 @@ export function RoomMapSpreadsheet({
   onSchedule,
   onBulkCancel,
 }: {
+  onDelete: (entries: SheetCancellationEntry[]) => Promise<void>;
   currentUserId: string;
   canCopy: boolean;
   canCopyAll: boolean;
@@ -505,7 +508,39 @@ export function RoomMapSpreadsheet({
   [rooms, dates, reservationIndex]);
   const canMove = (reservation: Reservation) => reservation.status === "reserved" && new Date(reservation.endsAt) > new Date(now)
     && (canManage || (canMoveOwn && reservation.userId === currentUserId));
-  const editing = useSpreadsheetEditing({ rooms, dates, shifts: visibleShifts, index: reservationIndex, canCopy, canMove });
+  const canCancel = (reservation: Reservation) => reservation.status === "reserved" && new Date(reservation.endsAt) > new Date(now)
+    && (canManage || reservation.userId === currentUserId);
+  const sheetElement = useRef<HTMLElement>(null);
+  const editing = useSpreadsheetEditing({ rooms, dates, shifts: visibleShifts, index: reservationIndex, canCopy, canMove, canCancel, onDelete, surfaceRef: sheetElement });
+  const roomCount = rooms.length;
+  useEffect(() => {
+    const element = sheetElement.current;
+    if (!element) return;
+    let frame = 0;
+    const fit = () => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        if (!window.matchMedia("(min-width: 781px)").matches || !roomCount) {
+          element.style.removeProperty("--sheet-row-height");
+          return;
+        }
+        const tables = Array.from(element.querySelectorAll<HTMLTableElement>(".room-spreadsheet-table")).slice(0, 2);
+        const first = tables[0];
+        if (!first) return;
+        const headers = tables.reduce((sum, table) => sum + (table.tHead?.getBoundingClientRect().height || 0), 0);
+        const height = Math.max(14, Math.min(40, Math.floor((window.innerHeight - first.getBoundingClientRect().top - headers - 20) / (roomCount * tables.length))));
+        element.style.setProperty("--sheet-row-height", `${height}px`);
+      });
+    };
+    const observer = new ResizeObserver(fit);
+    // Observe controls that move the sheet without resizing the viewport.
+    const main = element.closest("main");
+    if (main) observer.observe(main);
+    observer.observe(element);
+    window.addEventListener("resize", fit);
+    fit();
+    return () => { cancelAnimationFrame(frame); observer.disconnect(); window.removeEventListener("resize", fit); };
+  }, [sheetElement, roomCount, visibleShifts]);
   const bounds = editing.selection ? sheetBounds(editing.selection) : null;
   const selectedCount = bounds ? (bounds.bottom - bounds.top + 1) * (bounds.right - bounds.left + 1) : 0;
 
@@ -519,7 +554,7 @@ export function RoomMapSpreadsheet({
   };
 
   return (
-    <section className="room-spreadsheet" aria-label="Mapa de salas em planilha"
+    <section ref={sheetElement} className="room-spreadsheet sheet-fit" aria-label="Mapa de salas em planilha"
       onCopy={(event) => editing.onClipboard(event, "copy")}
       onCut={(event) => editing.onClipboard(event, "move")}
       onPaste={(event) => editing.onClipboard(event, "paste")}
@@ -538,7 +573,15 @@ export function RoomMapSpreadsheet({
           <span><i className="booked" /> Reservada</span>
           <span><i className="sunday" /> Domingo</span>
         </div>
-        <div className="spreadsheet-actions">
+      </div>
+      <div className="sheet-edit-toolbar" aria-label="Ações da seleção">
+        <span>{selectedCount ? `${selectedCount} célula(s) selecionada(s)` : "Selecione uma célula"}</span>
+        <button className="btn btn-soft" type="button" disabled={!editing.selection || editing.deleteBusy} onClick={() => editing.copy("copy")} title="Copiar (Ctrl+C)"><Copy size={15} /> Copiar</button>
+        {(canManage || canMoveOwn) && <button className="btn btn-soft" type="button" disabled={!editing.selection || editing.deleteBusy} onClick={() => editing.copy("move")} title="Recortar (Ctrl+X)"><Scissors size={15} /> Recortar</button>}
+        {(canCopy || canManage || canMoveOwn) && <button className="btn btn-soft" type="button" disabled={!editing.selection || !editing.clipboard?.items.length || editing.deleteBusy} onClick={() => editing.paste()} title="Colar (Ctrl+V)"><ClipboardPaste size={15} /> Colar</button>}
+        <button className="btn btn-danger" type="button" disabled={!editing.selection || editing.deleteBusy} onClick={() => void editing.deleteSelected()} title="Excluir reservas selecionadas (DEL)"><Trash2 size={15} /> {editing.deleteBusy ? "Excluindo..." : "Excluir (DEL)"}</button>
+        <details className="sheet-help"><summary>Ajuda</summary><p>Clique ou arraste pelas células para selecionar. Ctrl+C copia, Ctrl+X recorta e Ctrl+V cola. DEL exclui após confirmação. ESC ou clique fora da planilha desseleciona. Arraste a reserva ou sua alça para mover. Duplo clique ou Enter abre a célula. No celular, toque para abrir.</p></details>
+        <div className="spreadsheet-actions sheet-export-actions">
           <button
             className="btn btn-soft"
             type="button"
@@ -553,16 +596,6 @@ export function RoomMapSpreadsheet({
             </button>
           )}
         </div>
-      </div>
-      <p className="room-spreadsheet-hint">
-        Clique para selecionar e arraste pelas células para selecionar um intervalo. Use Ctrl+C, Ctrl+X e Ctrl+V.
-        Arraste a reserva selecionada ou sua alça para mover. Duplo clique ou Enter abre a célula. No celular, toque para abrir.
-      </p>
-      <div className="sheet-edit-toolbar" aria-label="Ações da seleção">
-        <span>{selectedCount ? `${selectedCount} célula(s) selecionada(s)` : "Selecione uma célula"}</span>
-        <button className="btn btn-soft" type="button" disabled={!editing.selection} onClick={() => editing.copy("copy")}><Copy size={15} /> Copiar</button>
-        {(canManage || canMoveOwn) && <button className="btn btn-soft" type="button" disabled={!editing.selection} onClick={() => editing.copy("move")}><Scissors size={15} /> Recortar</button>}
-        {(canCopy || canManage || canMoveOwn) && <button className="btn btn-soft" type="button" disabled={!editing.selection || !editing.clipboard?.items.length} onClick={() => editing.paste()}><ClipboardPaste size={15} /> Colar</button>}
       </div>
       {editing.message && <p className="sheet-status" role="status">{editing.message}</p>}
       <div className="room-spreadsheet-scroll" tabIndex={0}>

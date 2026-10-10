@@ -22,6 +22,10 @@ Clique em uma célula para selecionar. Arraste pelas células ou use Shift e as 
 
 Arraste a reserva selecionada ou sua alça para outra sala, dia ou turno. Duplo clique ou Enter abre a célula para agendar ou editar. No celular, o toque continua abrindo a célula.
 
+DEL ou o botão Excluir remove todas as reservas da seleção após uma única confirmação. Reservas que aparecem em mais de uma célula são contadas uma vez. A exclusão admite até 1.000 reservas atuais ou futuras, próprias ou com `booking.manage_all`, preserva o histórico e é aplicada por inteiro. ESC ou clique fora da planilha desfaz a seleção.
+
+Ao entrar em Planilha, a lateral é recolhida e os controles superiores são condensados. Os filtros ficam acessíveis pelo botão Filtros. No computador, as linhas ajustam sua altura ao espaço da tela para exibir a semana dos turnos Manhã e Tarde.
+
 A prévia preserva a duração e permite ajustar sala, data e horário de início. Células vazias mantêm o espaçamento da seleção, e reservas que atravessam turnos são aplicadas uma única vez. Cada operação admite até 100 reservas. Domingos, destinos passados, alterações concorrentes e sobreposições dentro da seleção impedem a aplicação completa. Reservas existentes no destino só são substituídas após confirmação explícita.
 
 Copiar reservas exige `booking.create_all` ou `booking.create_own`; com permissão própria, as cópias são criadas em nome do usuário. Mover reservas exige `booking.manage_all` ou, para reservas próprias, `booking.create_own`. A movimentação afeta somente as ocorrências selecionadas, preserva seus IDs e mantém a vinculação a solicitações aprovadas. Operações concluídas geram auditoria e notificações.

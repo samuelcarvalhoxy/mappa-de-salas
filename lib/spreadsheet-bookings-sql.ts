@@ -2,6 +2,38 @@
 // booking writers take RowExclusive locks, so conflict checks see their commits.
 export const SHEET_TRANSFER_LOCK_SQL = "LOCK TABLE reservations IN SHARE ROW EXCLUSIVE MODE";
 
+export const SHEET_CANCEL_SELECTION_SQL = `WITH input AS MATERIALIZED (
+  SELECT * FROM jsonb_to_recordset($1::jsonb) AS item(
+    "reservationId" uuid,"expectedRoomId" uuid,"expectedStartsAt" timestamptz,"expectedEndsAt" timestamptz,
+    "expectedUserId" uuid,"expectedReason" text,"expectedShareable" boolean,"expectedPeople" int)
+), eligibility AS MATERIALIZED (
+  SELECT i."reservationId",rs.user_id,
+    (rs.status='reserved' AND rs.ends_at>now() AND rs.room_id=i."expectedRoomId"
+      AND rs.starts_at=i."expectedStartsAt" AND rs.ends_at=i."expectedEndsAt"
+      AND rs.user_id=i."expectedUserId" AND rs.reason=i."expectedReason"
+      AND rs.shareable=i."expectedShareable" AND rs.expected_people=i."expectedPeople"
+      AND ($3::boolean OR rs.user_id=$2::uuid)) IS TRUE permitted
+  FROM input i LEFT JOIN reservations rs ON rs.id=i."reservationId"
+), gate AS MATERIALIZED (
+  SELECT count(*) FILTER (WHERE NOT permitted)::int invalid_count,
+    count(*)=count(DISTINCT "reservationId") unique_sources FROM eligibility
+), cancelled AS (
+  UPDATE reservations rs SET status='cancelled',updated_at=now()
+  FROM eligibility e CROSS JOIN gate g WHERE rs.id=e."reservationId" AND g.invalid_count=0 AND g.unique_sources
+  RETURNING rs.id,rs.user_id
+), logged AS (
+  INSERT INTO audit_log(actor_id,action,details)
+  SELECT $2::uuid,'booking.sheet_cancel','Exclusão rápida pela planilha: ' ||
+    (SELECT count(*) FROM cancelled) || ' reserva(s); seleção=' || $1::text
+  WHERE EXISTS (SELECT 1 FROM cancelled) RETURNING id
+), recipients AS (SELECT DISTINCT user_id FROM cancelled), notified AS (
+  INSERT INTO notifications(user_id,title,body,url)
+  SELECT user_id,'Reservas canceladas','Reservas foram excluídas do mapa pela seleção da planilha. Consulte o histórico na Agenda.',
+    '/?tab=calendar' FROM recipients RETURNING id
+)
+SELECT g.*, (SELECT count(*)::int FROM cancelled) cancelled_count,
+  COALESCE((SELECT array_agg(user_id::text) FROM recipients),'{}'::text[]) user_ids FROM gate g`;
+
 export const SHEET_TRANSFER_SQL = `WITH input AS MATERIALIZED (
   SELECT * FROM jsonb_to_recordset($1::jsonb) AS item(
     "reservationId" uuid, "expectedRoomId" uuid, "expectedStartsAt" timestamptz,

@@ -99,7 +99,7 @@ import type {
 import { useInstallPrompt, usePushNotifications } from "./pwa-hooks";
 import { Brand, Empty, Summary } from "./app-shell-parts";
 import { RoomMapSpreadsheet } from "./room-map-spreadsheet";
-import type { SheetTransfer } from "@/lib/spreadsheet-bookings";
+import type { SheetTransfer, SheetCancellationEntry } from "@/lib/spreadsheet-bookings";
 import { AlternateDatePicker } from "./alternate-date-picker";
 import { BulkCancelModal } from "./bulk-cancel-modal";
 import { RequestExpiryDialog, RequestOutcomeSummary, RequestOutcomesPanel } from "./request-outcomes";
@@ -248,6 +248,7 @@ export function AppShell() {
   const [mapDate, setMapDate] = useState(() => dateKey(new Date()));
   const [sidebar, setSidebar] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [sheetView, setSheetView] = useState(false);
   const [modal, setModal] = useState<{ type: string; data?: unknown } | null>(
     null,
   );
@@ -281,6 +282,10 @@ export function AppShell() {
       // The current session can still use the chosen layout.
     }
   }
+  const handleMapViewChange = useCallback((mode: "cards" | "spreadsheet") => {
+    setSheetView(mode === "spreadsheet");
+    if (mode === "spreadsheet") setSidebarCollapsed(true);
+  }, []);
 
   const refresh = useCallback(async (quiet = false, syncOnly = false) => {
     if (syncOnly && backgroundSyncInFlight.current) return;
@@ -611,7 +616,7 @@ export function AppShell() {
   };
 
   return (
-    <div className={`app-layout ${sidebarCollapsed ? "sidebar-collapsed" : ""}`}>
+    <div className={`app-layout ${sidebarCollapsed ? "sidebar-collapsed" : ""} ${activeTab === "map" && sheetView ? "spreadsheet-focus" : ""}`}>
       <aside id="app-sidebar" className={`sidebar ${sidebar ? "open" : ""}`}>
         <div className="sidebar-head">
           <Brand />
@@ -814,6 +819,15 @@ export function AppShell() {
               canBookDirectly={canBookDirectly}
               canRequest={canRequest}
               canManageReservations={can("booking.manage_all")}
+              onViewModeChange={handleMapViewChange}
+              onSheetDelete={async (entries) => {
+                if (actionInFlight.current) throw new Error("Aguarde a operação em andamento.");
+                actionInFlight.current = true;
+                try {
+                  await api("/api/action", { action: "booking.sheet_cancel", entries, confirmed: true });
+                  await refresh(true);
+                } finally { actionInFlight.current = false; }
+              }}
               onSheetTransfer={async (transfer) => {
                 if (actionInFlight.current) throw new Error("Aguarde a operação em andamento.");
                 actionInFlight.current = true;
@@ -1700,6 +1714,8 @@ function SearchableUserSelect({
 }
 
 function RoomMap({
+  onViewModeChange,
+  onSheetDelete,
   onSheetTransfer,
   state,
   selectedDate,
@@ -1714,6 +1730,8 @@ function RoomMap({
   onBulkCancel,
   onOpenAgenda,
 }: {
+  onViewModeChange: (mode: "cards" | "spreadsheet") => void;
+  onSheetDelete: (entries: SheetCancellationEntry[]) => Promise<void>;
   onSheetTransfer: (transfer: SheetTransfer) => Promise<void>;
   state: AppState;
   selectedDate: string;
@@ -1732,6 +1750,8 @@ function RoomMap({
   const deferredQuery = useDeferredValue(query);
   const [filter, setFilter] = useState("all");
   const [viewMode, setViewMode] = useState<"cards" | "spreadsheet">("cards");
+  const [showSheetControls, setShowSheetControls] = useState(false);
+  useEffect(() => () => onViewModeChange("cards"), [onViewModeChange]);
   const [selectedShiftId, setSelectedShiftId] = useState(() =>
     mapShiftForNow(state.now),
   );
@@ -1889,7 +1909,7 @@ function RoomMap({
   };
   const navigationStep = viewMode === "spreadsheet" ? 7 : 1;
   return (
-    <>
+    <section className={`room-map ${viewMode === "spreadsheet" ? "room-map-sheet" : ""}`}>
       <div className="map-date-bar" aria-busy={dayLoading}>
         <div className="map-date-copy">
           <span className="map-date-icon">
@@ -1919,7 +1939,7 @@ function RoomMap({
             type="button"
             className={viewMode === "cards" ? "active" : ""}
             aria-pressed={viewMode === "cards"}
-            onClick={() => setViewMode("cards")}
+            onClick={() => { setViewMode("cards"); onViewModeChange("cards"); }}
           >
             <LayoutGrid size={16} /> Cartões
           </button>
@@ -1927,11 +1947,16 @@ function RoomMap({
             type="button"
             className={viewMode === "spreadsheet" ? "active" : ""}
             aria-pressed={viewMode === "spreadsheet"}
-            onClick={() => setViewMode("spreadsheet")}
+            onClick={() => { setViewMode("spreadsheet"); setShowSheetControls(false); onViewModeChange("spreadsheet"); window.scrollTo({ top: 0, behavior: "auto" }); }}
           >
             <Table2 size={16} /> Planilha
           </button>
         </div>
+        {viewMode === "spreadsheet" && <button className="btn btn-soft sheet-controls-toggle" type="button"
+          aria-expanded={showSheetControls} aria-controls="map-filter-toolbar" onClick={() => setShowSheetControls((value) => !value)}>
+          <Settings2 size={15} /> {showSheetControls ? "Recolher filtros" : "Filtros"}
+          {(query || filter !== "all") && <span aria-label="Há filtros ativos">•</span>}
+        </button>}
         <div className="map-date-controls">
           <button
             className="icon-btn"
@@ -2032,7 +2057,7 @@ function RoomMap({
           tone="violet"
         />
       </div>}
-      <div className="toolbar">
+      <div id="map-filter-toolbar" className="toolbar" hidden={viewMode === "spreadsheet" && !showSheetControls}>
         <div className="search">
           <Search size={18} />
           <input
@@ -2071,6 +2096,10 @@ function RoomMap({
         />
       ) : viewMode === "spreadsheet" ? (
         <RoomMapSpreadsheet
+          onDelete={async (entries) => {
+            await onSheetDelete(entries);
+            setReloadDay((value) => value + 1);
+          }}
           currentUserId={state.currentUser?.id || ""}
           canCopy={canBookDirectly}
           canCopyAll={Boolean(state.currentUser?.isGod || state.currentUser?.permissions.includes("booking.create_all"))}
@@ -2267,7 +2296,7 @@ function RoomMap({
       )}
         </>
       )}
-    </>
+    </section>
   );
 }
 

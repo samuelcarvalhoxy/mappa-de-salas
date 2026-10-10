@@ -1,14 +1,30 @@
 import type { NeonQueryFunction } from "@neondatabase/serverless";
 import { after, NextResponse } from "next/server";
 import type { Permission } from "@/lib/types";
-import { parseSheetTransfer } from "@/lib/spreadsheet-bookings";
-import { SHEET_TRANSFER_LOCK_SQL, SHEET_TRANSFER_SQL } from "@/lib/spreadsheet-bookings-sql";
+import { parseSheetTransfer, parseSheetCancellation } from "@/lib/spreadsheet-bookings";
+import { SHEET_TRANSFER_LOCK_SQL, SHEET_TRANSFER_SQL, SHEET_CANCEL_SELECTION_SQL } from "@/lib/spreadsheet-bookings-sql";
 import { pushToUsers } from "@/lib/push";
 
 export async function handleSpreadsheetBookingAction({ action, body, db, actor, requirePermission }: {
   action: string; body: Record<string, unknown>; db: NeonQueryFunction<false, false>;
   actor: Record<string, unknown>; requirePermission: (permission: Permission) => boolean;
 }) {
+  if (action === "booking.sheet_cancel") {
+    let entries;
+    try { entries = parseSheetCancellation(body); }
+    catch (error) { return NextResponse.json({ error: error instanceof Error ? error.message : "Seleção inválida." }, { status: 400 }); }
+    const results = await db.transaction((tx) => [
+      tx.query("SET LOCAL lock_timeout = '5s'"), tx.query(SHEET_TRANSFER_LOCK_SQL),
+      tx.query(SHEET_CANCEL_SELECTION_SQL, [JSON.stringify(entries),actor.id,requirePermission("booking.manage_all")]),
+    ], { isolationLevel: "ReadCommitted" });
+    const row = results[2][0];
+    if (Number(row.invalid_count) || !row.unique_sources || Number(row.cancelled_count) !== entries.length)
+      return NextResponse.json({ error: "A seleção contém uma reserva alterada, encerrada ou que você não pode excluir. Atualize a planilha e selecione novamente. Nenhuma reserva foi excluída." }, { status: 409 });
+    const recipients = Array.isArray(row.user_ids) ? row.user_ids.map(String) : [];
+    after(async () => { await pushToUsers(recipients, { title: "Reservas canceladas",
+      body: `${entries.length} reserva(s) foram excluídas do mapa pela seleção da planilha.`, url: "/?tab=calendar", tag: "sheet-cancel" }); });
+    return NextResponse.json({ ok: true, cancelledCount: Number(row.cancelled_count) });
+  }
   if (action !== "booking.sheet_transfer") return null;
   const canCopyAll = requirePermission("booking.create_all");
   const canCopyOwn = requirePermission("booking.create_own");

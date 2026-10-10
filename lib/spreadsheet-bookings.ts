@@ -25,6 +25,33 @@ export type SheetTransferEntry = {
   endsAt: string;
 };
 export type SheetTransfer = { mode: "copy" | "move"; entries: SheetTransferEntry[]; confirmReplacement?: boolean };
+export type SheetCancellationEntry = Omit<SheetTransferEntry, "roomId" | "startsAt" | "endsAt">;
+
+export function sheetCancellationEntries(clipboard: SheetClipboard): SheetCancellationEntry[] {
+  return clipboard.items.map(({ reservation }) => ({
+    reservationId: reservation.id, expectedRoomId: reservation.roomId,
+    expectedStartsAt: reservation.startsAt, expectedEndsAt: reservation.endsAt,
+    expectedUserId: reservation.userId, expectedReason: reservation.reason,
+    expectedShareable: reservation.shareable, expectedPeople: reservation.expectedPeople,
+  }));
+}
+
+export function parseSheetCancellation(body: Record<string, unknown>): SheetCancellationEntry[] {
+  if (body.confirmed !== true || !Array.isArray(body.entries) || !body.entries.length || body.entries.length > 1000)
+    throw new Error("Confirme uma seleção de até 1.000 agendamentos para excluir.");
+  const seen = new Set<string>();
+  return body.entries.map((value: unknown) => {
+    if (!value || typeof value !== "object") throw new Error("Seleção inválida.");
+    const entry = value as SheetCancellationEntry;
+    if (![entry.reservationId, entry.expectedRoomId, entry.expectedUserId].every((id) => typeof id === "string" && UUID.test(id)) || seen.has(entry.reservationId))
+      throw new Error("A seleção contém identificadores inválidos ou repetidos.");
+    seen.add(entry.reservationId);
+    if (![entry.expectedStartsAt, entry.expectedEndsAt].every((stamp) => typeof stamp === "string" && /^\d{4}-\d{2}-\d{2}T.*(?:Z|[+-]\d{2}:\d{2})$/.test(stamp) && Number.isFinite(Date.parse(stamp))) ||
+      typeof entry.expectedReason !== "string" || typeof entry.expectedShareable !== "boolean" || !Number.isInteger(entry.expectedPeople))
+      throw new Error("A seleção mudou. Selecione as células novamente.");
+    return entry;
+  });
+}
 
 export function sheetBounds(selection: SheetSelection) {
   return {

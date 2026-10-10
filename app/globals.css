@@ -2980,6 +2980,95 @@ main {
 .sheet-error { color: var(--danger); }
 .modal-form .sheet-replacement-confirmation { display: flex; align-items: center; gap: 10px; }
 .modal-form .sheet-replacement-confirmation input { width: 18px; height: 18px; }
+
+.room-map .toolbar[hidden] { display: none; }
+.sheet-export-actions { margin-left: auto; display: flex; gap: 6px; }
+.sheet-help { position: relative; font-size: 11px; }
+.sheet-help summary { cursor: pointer; padding: 7px; }
+.sheet-help p {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  width: min(380px, 80vw);
+  padding: 14px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.15);
+  line-height: 1.5;
+  z-index: 10;
+}
+@media (min-width: 781px) {
+  .spreadsheet-focus .topbar { height: 52px; padding: 0 14px; }
+  .spreadsheet-focus .topbar h1 { font-size: 17px; }
+  .spreadsheet-focus .topbar p,
+  .spreadsheet-focus .notification-action,
+  .spreadsheet-focus .desktop-install { display: none; }
+  .spreadsheet-focus .content { padding: 8px 12px 12px; max-width: none; }
+  .spreadsheet-focus .agenda-fab { display: none; }
+  .room-map-sheet .map-date-bar { padding: 5px 8px; gap: 8px; margin-bottom: 6px; border-radius: 10px; }
+  .room-map-sheet .map-date-copy { flex: 1 1 180px; }
+  .room-map-sheet .map-date-copy strong { font-size: 12px; }
+  .room-map-sheet .map-date-copy small,
+  .room-map-sheet .map-date-icon { display: none; }
+  .room-map-sheet .map-date-controls { gap: 4px; }
+  .room-map-sheet .map-date-controls input[type="date"] { height: 30px; min-width: 126px; font-size: 11px; padding: 0 5px; }
+  .room-map-sheet .map-date-controls .icon-btn,
+  .room-map-sheet .map-date-bar .btn,
+  .room-map-sheet .mode-toggle button { min-height: 30px; padding: 5px 8px; font-size: 11px; }
+  .room-map-sheet .map-date-controls .icon-btn { width: 30px; height: 30px; }
+  .room-map-sheet .toolbar { margin-bottom: 6px; gap: 8px; }
+  .sheet-fit .room-spreadsheet-guide { display: none; }
+  .sheet-fit .sheet-edit-toolbar { padding: 5px 8px; gap: 5px; flex-wrap: nowrap; }
+  .sheet-fit .sheet-edit-toolbar > span { margin-right: 0; font-size: 10px; white-space: nowrap; }
+  .sheet-fit .sheet-edit-toolbar .btn { height: 28px; min-height: 28px; padding: 5px 7px; font-size: 10px; white-space: nowrap; gap: 4px; }
+  .sheet-fit .sheet-edit-toolbar .btn svg { width: 13px; height: 13px; }
+  .sheet-fit .sheet-status { margin: 0; padding: 4px 8px; font-size: 10px; border-radius: 0; }
+  .sheet-fit .room-spreadsheet-tables { min-width: 0; }
+  .sheet-fit .room-spreadsheet-table { border-bottom-width: 4px; }
+  .sheet-fit .room-spreadsheet-table th:first-child { width: 130px; }
+  .sheet-fit .spreadsheet-date-row th { padding: 3px 2px; font-size: 10px; }
+  .sheet-fit .spreadsheet-weekday-row th { padding: 1px 2px; font-size: 8px; letter-spacing: 0; }
+  .sheet-fit .room-spreadsheet-table tbody tr,
+  .sheet-fit .room-spreadsheet-table tbody td,
+  .sheet-fit .room-spreadsheet-table tbody th {
+    height: var(--sheet-row-height, 28px);
+    max-height: var(--sheet-row-height, 28px);
+  }
+  .sheet-fit .room-spreadsheet-table tbody td,
+  .sheet-fit .room-spreadsheet-table tbody th { padding: 0; font-size: 0; line-height: 0; }
+  .sheet-fit .room-spreadsheet-table tbody th button { display: block; line-height: 1; }
+  .sheet-fit .spreadsheet-cell-sunday span { display: block; line-height: 1; }
+  .sheet-fit .room-spreadsheet-table tbody th button,
+  .sheet-fit .spreadsheet-cell-free > button,
+  .sheet-fit .spreadsheet-cell-free button,
+  .sheet-fit .spreadsheet-reservation-row,
+  .sheet-fit .spreadsheet-reservation {
+    height: calc(var(--sheet-row-height, 28px) - 2px);
+    min-height: 0;
+  }
+  .sheet-fit .room-spreadsheet-table tbody th button { padding: 0 5px; }
+  .sheet-fit .spreadsheet-cell-booked { padding: 0; }
+  .sheet-fit .spreadsheet-reservation {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-rows: 1fr 1fr;
+    align-items: center;
+    column-gap: 3px;
+    padding: 0 16px 0 3px;
+    line-height: 1;
+  }
+  .sheet-fit .spreadsheet-reservation strong { grid-column: 1 / -1; font-size: clamp(8px, calc(var(--sheet-row-height, 28px) * 0.4), 11px); }
+  .sheet-fit .spreadsheet-reservation span,
+  .sheet-fit .spreadsheet-reservation small { margin: 0; font-size: clamp(7px, calc(var(--sheet-row-height, 28px) * 0.35), 10px); }
+  .sheet-fit .spreadsheet-reservation small { width: auto; }
+  .sheet-fit .spreadsheet-free-label { font-size: 9px; line-height: 1; }
+}
+@media (min-width: 781px) and (max-width: 1100px) {
+  .sheet-fit .sheet-edit-toolbar { flex-wrap: wrap; }
+  .sheet-fit .sheet-edit-toolbar > span { display: none; }
+  .sheet-fit .sheet-export-actions { margin-left: 0; }
+}
 .spreadsheet-cell-free .spreadsheet-cell-action {
   top: 50%;
   right: 7px;

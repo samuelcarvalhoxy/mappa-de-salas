@@ -1,14 +1,17 @@
 "use client";
 
-import { useEffect, useRef, useState, type ClipboardEvent, type DragEvent, type HTMLAttributes, type KeyboardEvent } from "react";
-import { captureSheetSelection, prepareSheetTransfer, sheetBounds, type SheetClipboard, type SheetPosition, type SheetSelection, type SheetTransfer } from "@/lib/spreadsheet-bookings";
+import { useEffect, useRef, useState, type ClipboardEvent, type DragEvent, type HTMLAttributes, type KeyboardEvent, type RefObject } from "react";
+import { captureSheetSelection, prepareSheetTransfer, sheetBounds, sheetCancellationEntries, type SheetCancellationEntry, type SheetClipboard, type SheetPosition, type SheetSelection, type SheetTransfer } from "@/lib/spreadsheet-bookings";
 import type { Reservation, Room } from "@/lib/types";
 import type { MapShift } from "@/lib/map-shifts";
 
-export function useSpreadsheetEditing({ rooms, dates, shifts, index, canCopy, canMove }: {
+export function useSpreadsheetEditing({ rooms, dates, shifts, index, canCopy, canMove, canCancel, onDelete, surfaceRef }: {
   rooms: Room[]; dates: string[]; index: Map<string, Reservation[]>;
   shifts: readonly MapShift[];
   canCopy: boolean; canMove: (reservation: Reservation) => boolean;
+  canCancel: (reservation: Reservation) => boolean;
+  onDelete: (entries: SheetCancellationEntry[]) => Promise<void>;
+  surfaceRef: RefObject<HTMLElement | null>;
 }) {
   const viewKey = `${dates[0]}:${rooms.map((room) => room.id).join(",")}:${shifts.map((shift) => shift.id).join(",")}`;
   const [storedSelection, setStoredSelection] = useState<(SheetSelection & { viewKey: string }) | null>(null);
@@ -20,6 +23,8 @@ export function useSpreadsheetEditing({ rooms, dates, shifts, index, canCopy, ca
   const dragging = useRef<SheetClipboard | null>(null);
   const [dropTarget, setDropTarget] = useState<SheetPosition | null>(null);
   const touch = useRef(false);
+  const deleting = useRef(false);
+  const [deleteBusy, setDeleteBusy] = useState(false);
   useEffect(() => {
     const release = () => { selecting.current = false; };
     window.addEventListener("pointerup", release);
@@ -27,6 +32,24 @@ export function useSpreadsheetEditing({ rooms, dates, shifts, index, canCopy, ca
     window.addEventListener("blur", release);
     return () => { window.removeEventListener("pointerup", release); window.removeEventListener("pointercancel", release); window.removeEventListener("blur", release); };
   }, []);
+  useEffect(() => {
+    const outside = (event: PointerEvent) => {
+      if (event.target instanceof Node && !surfaceRef.current?.contains(event.target)) {
+        selecting.current = false;
+        setStoredSelection(null);
+      }
+    };
+    const escape = (event: globalThis.KeyboardEvent) => {
+      if (event.key !== "Escape" || (event.target instanceof Element && event.target.closest("dialog,[role='dialog']"))) return;
+      selecting.current = false;
+      setStoredSelection(null);
+      setClipboard(null);
+      setMessage("");
+    };
+    document.addEventListener("pointerdown", outside);
+    document.addEventListener("keydown", escape);
+    return () => { document.removeEventListener("pointerdown", outside); document.removeEventListener("keydown", escape); };
+  }, [surfaceRef]);
 
   function isSelected(position: SheetPosition) {
     if (!selection) return false;
@@ -71,8 +94,12 @@ export function useSpreadsheetEditing({ rooms, dates, shifts, index, canCopy, ca
     paste();
   }
   function onKeyDown(event: KeyboardEvent) {
+    if (event.key === "Delete" && !event.repeat && event.target instanceof Element && !event.target.closest("input,textarea,select,[contenteditable='true'],dialog,[role='dialog']")) {
+      event.preventDefault();
+      void deleteSelected();
+      return;
+    }
     if (!(event.target instanceof HTMLElement) || !event.target.closest(".room-spreadsheet-scroll")) return;
-    if (event.key === "Escape") { setClipboard(null); setStoredSelection(null); setMessage(""); return; }
     if (event.ctrlKey || event.metaKey || event.altKey) return;
     const cell = event.target.closest<HTMLElement>("[data-sheet-row]");
     if (!cell || !["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(event.key)) return;
@@ -82,6 +109,24 @@ export function useSpreadsheetEditing({ rooms, dates, shifts, index, canCopy, ca
     const next = { row: Math.max(0, Math.min(rooms.length * shifts.length - 1, row)), column: Math.max(0, Math.min(dates.length - 1, column)) };
     select(next, event.shiftKey);
     cell.closest(".room-spreadsheet-scroll")?.querySelector<HTMLElement>(`[data-sheet-row="${next.row}"][data-sheet-column="${next.column}"]`)?.focus();
+  }
+  async function deleteSelected() {
+    if (deleting.current) return;
+    try {
+      const snapshot = capture("copy");
+      if (!snapshot.items.length) throw new Error("A seleção não contém reservas para excluir.");
+      if (snapshot.items.length > 1000) throw new Error("Selecione até 1.000 reservas por operação.");
+      if (snapshot.items.some(({ reservation }) => !canCancel(reservation)))
+        throw new Error("Selecione somente reservas atuais ou futuras que você tem permissão para excluir.");
+      if (!window.confirm(`Excluir ${snapshot.items.length} reserva(s) selecionada(s) do mapa?`)) return;
+      deleting.current = true;
+      setDeleteBusy(true);
+      await onDelete(sheetCancellationEntries(snapshot));
+      setStoredSelection(null);
+      setClipboard(null);
+      setMessage(`${snapshot.items.length} reserva(s) excluída(s) do mapa.`);
+    } catch (error) { setMessage(error instanceof Error ? error.message : "Não foi possível excluir a seleção."); }
+    finally { deleting.current = false; setDeleteBusy(false); }
   }
   function startDrag(event: DragEvent, position: SheetPosition) {
     try {
@@ -115,7 +160,8 @@ export function useSpreadsheetEditing({ rooms, dates, shifts, index, canCopy, ca
     };
   }
   return { selection, clipboard, pending, message, setMessage, setPending, setClipboard,
-    dropTarget, isSelected, cellProps, copy, paste, onClipboard, onKeyDown, startDrag, endDrag, touch };
+    dropTarget, isSelected, cellProps, copy, paste, onClipboard, onKeyDown, startDrag, endDrag, touch,
+    deleteSelected, deleteBusy };
 }
 
 export type SpreadsheetEditing = ReturnType<typeof useSpreadsheetEditing>;

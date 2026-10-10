@@ -3,12 +3,14 @@
 import { useEffect, useRef, useState, type ClipboardEvent, type DragEvent, type HTMLAttributes, type KeyboardEvent } from "react";
 import { captureSheetSelection, prepareSheetTransfer, sheetBounds, type SheetClipboard, type SheetPosition, type SheetSelection, type SheetTransfer } from "@/lib/spreadsheet-bookings";
 import type { Reservation, Room } from "@/lib/types";
+import type { MapShift } from "@/lib/map-shifts";
 
-export function useSpreadsheetEditing({ rooms, dates, index, canCopy, canMove }: {
+export function useSpreadsheetEditing({ rooms, dates, shifts, index, canCopy, canMove }: {
   rooms: Room[]; dates: string[]; index: Map<string, Reservation[]>;
+  shifts: readonly MapShift[];
   canCopy: boolean; canMove: (reservation: Reservation) => boolean;
 }) {
-  const viewKey = `${dates[0]}:${rooms.map((room) => room.id).join(",")}`;
+  const viewKey = `${dates[0]}:${rooms.map((room) => room.id).join(",")}:${shifts.map((shift) => shift.id).join(",")}`;
   const [storedSelection, setStoredSelection] = useState<(SheetSelection & { viewKey: string }) | null>(null);
   const selection = storedSelection?.viewKey === viewKey ? storedSelection : null;
   const [clipboard, setClipboard] = useState<SheetClipboard | null>(null);
@@ -36,7 +38,7 @@ export function useSpreadsheetEditing({ rooms, dates, index, canCopy, canMove }:
   }
   function capture(mode: SheetClipboard["mode"], range = selection) {
     if (!range) throw new Error("Selecione uma célula ou um intervalo primeiro.");
-    const snapshot = captureSheetSelection(range, rooms, dates, index, mode);
+    const snapshot = captureSheetSelection(range, rooms, dates, index, mode, shifts);
     if (mode === "move" && (!snapshot.items.length || snapshot.items.some((item) => !canMove(item.reservation))))
       throw new Error("Você só pode recortar reservas atuais ou futuras que tem permissão para editar.");
     return snapshot;
@@ -54,7 +56,7 @@ export function useSpreadsheetEditing({ rooms, dates, index, canCopy, canMove }:
     try {
       if (!canCopy && snapshot?.mode === "copy") throw new Error("Seu perfil pode copiar o texto, mas não criar agendamentos diretamente.");
       if (!snapshot || !target) throw new Error("Copie ou recorte agendamentos e selecione uma célula de destino.");
-      const transfer = prepareSheetTransfer(snapshot, target, rooms, dates);
+      const transfer = prepareSheetTransfer(snapshot, target, rooms, dates, shifts);
       setPending({ transfer, clipboard: snapshot });
       setMessage("");
     } catch (error) { setMessage(error instanceof Error ? error.message : "Destino inválido."); }
@@ -77,7 +79,7 @@ export function useSpreadsheetEditing({ rooms, dates, index, canCopy, canMove }:
     event.preventDefault();
     const row = Number(cell.dataset.sheetRow) + (event.key === "ArrowDown" ? 1 : event.key === "ArrowUp" ? -1 : 0);
     const column = Number(cell.dataset.sheetColumn) + (event.key === "ArrowRight" ? 1 : event.key === "ArrowLeft" ? -1 : 0);
-    const next = { row: Math.max(0, Math.min(rooms.length * 3 - 1, row)), column: Math.max(0, Math.min(dates.length - 1, column)) };
+    const next = { row: Math.max(0, Math.min(rooms.length * shifts.length - 1, row)), column: Math.max(0, Math.min(dates.length - 1, column)) };
     select(next, event.shiftKey);
     cell.closest(".room-spreadsheet-scroll")?.querySelector<HTMLElement>(`[data-sheet-row="${next.row}"][data-sheet-column="${next.column}"]`)?.focus();
   }

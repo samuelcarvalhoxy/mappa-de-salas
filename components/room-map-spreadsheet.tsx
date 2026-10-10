@@ -88,6 +88,7 @@ async function exportSpreadsheetMap(
   dates: string[],
   rooms: Room[],
   reservationIndex: Map<string, Reservation[]>,
+  shifts: readonly MapShift[],
 ) {
   const ExcelJS = await import("exceljs");
   const workbook = new ExcelJS.Workbook();
@@ -102,7 +103,7 @@ async function exportSpreadsheetMap(
     sheet.getColumn(column).width = 24;
 
   let rowNumber = 1;
-  for (const shift of MAP_SHIFTS) {
+  for (const shift of shifts) {
     const title = sheet.getRow(rowNumber);
     title.getCell(1).value = `SALAS ${shift.name.toLocaleUpperCase("pt-BR")} · ${shift.startTime} às ${shift.endTime}`;
     sheet.mergeCells(rowNumber, 1, rowNumber, 8);
@@ -498,16 +499,20 @@ export function RoomMapSpreadsheet({
     () => buildReservationIndex(reservations, dates),
     [dates, reservations],
   );
+  const visibleShifts = useMemo(() => MAP_SHIFTS.filter((shift) => shift.id !== "extra" ||
+    rooms.some((room) => dates.some((date) => !isSundayDate(date) &&
+      (reservationIndex.get(spreadsheetCellKey(room.id, date, shift.id))?.length || 0) > 0))),
+  [rooms, dates, reservationIndex]);
   const canMove = (reservation: Reservation) => reservation.status === "reserved" && new Date(reservation.endsAt) > new Date(now)
     && (canManage || (canMoveOwn && reservation.userId === currentUserId));
-  const editing = useSpreadsheetEditing({ rooms, dates, index: reservationIndex, canCopy, canMove });
+  const editing = useSpreadsheetEditing({ rooms, dates, shifts: visibleShifts, index: reservationIndex, canCopy, canMove });
   const bounds = editing.selection ? sheetBounds(editing.selection) : null;
   const selectedCount = bounds ? (bounds.bottom - bounds.top + 1) * (bounds.right - bounds.left + 1) : 0;
 
   const runExport = async () => {
     setExporting(true);
     try {
-      await exportSpreadsheetMap(dates, rooms, reservationIndex);
+      await exportSpreadsheetMap(dates, rooms, reservationIndex, visibleShifts);
     } finally {
       setExporting(false);
     }
@@ -526,7 +531,7 @@ export function RoomMapSpreadsheet({
         </div>
         <div>
           <Clock3 size={18} />
-          <span>Manhã, tarde e turno extra</span>
+          <span>{visibleShifts.some((shift) => shift.id === "extra") ? "Manhã, tarde e turno extra" : "Manhã e tarde"}</span>
         </div>
         <div className="spreadsheet-legend">
           <span><i className="free" /> Livre</span>
@@ -562,7 +567,7 @@ export function RoomMapSpreadsheet({
       {editing.message && <p className="sheet-status" role="status">{editing.message}</p>}
       <div className="room-spreadsheet-scroll" tabIndex={0}>
         <div className="room-spreadsheet-tables">
-          {MAP_SHIFTS.map((shift, shiftIndex) => (
+          {visibleShifts.map((shift, shiftIndex) => (
             <SpreadsheetShift
               editing={editing}
               shiftIndex={shiftIndex}

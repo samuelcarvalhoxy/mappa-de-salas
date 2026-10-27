@@ -4,6 +4,9 @@ import { unitHeaders, unitExportName } from "@/lib/unit-client";
 
 import { useEffect, useMemo, useState } from "react";
 import {
+  ArrowDown,
+  ArrowUp,
+  ArrowUpDown,
   BarChart3,
   Bell,
   Check,
@@ -341,9 +344,28 @@ export function NotificationManagement({
   );
 }
 
+const accessColumns = [
+  { key: "name", label: "Usuário" },
+  { key: "roleName", label: "Perfil" },
+  { key: "lastLoginAt", label: "Último login" },
+  { key: "lastSeenAt", label: "Última atividade" },
+  { key: "loginCount", label: "Logins" },
+] as const;
+type AccessSortColumn = (typeof accessColumns)[number]["key"];
+const accessCollator = new Intl.Collator("pt-BR", { sensitivity: "base", numeric: true });
+
 export function AccessReportView({ state }: { state: AppState }) {
   const [query, setQuery] = useState("");
   const [role, setRole] = useState("all");
+  const [sort, setSort] = useState<{ column: AccessSortColumn; direction: "asc" | "desc" }>({ column: "name", direction: "asc" });
+  const chooseSort = (column: AccessSortColumn) => setSort(previous => ({
+    column,
+    direction: previous.column === column ? previous.direction === "asc" ? "desc" : "asc" : column === "name" || column === "roleName" ? "asc" : "desc",
+  }));
+  const roleOptions = useMemo(() => Array.from(new Map([
+    ...state.roles.map(item => [item.id, item.name] as const),
+    ...state.users.map(user => [user.roleId, user.roleName] as const),
+  ])).sort((a, b) => accessCollator.compare(a[1], b[1])), [state.roles, state.users]);
   const filtered = useMemo(
     () =>
       state.users.filter(
@@ -352,15 +374,30 @@ export function AccessReportView({ state }: { state: AppState }) {
           `${user.name} ${user.username}`
             .toLocaleLowerCase("pt-BR")
             .includes(query.trim().toLocaleLowerCase("pt-BR")),
-      ),
-    [query, role, state.users],
+      ).sort((a, b) => {
+        const direction = sort.direction === "asc" ? 1 : -1;
+        let comparison = 0;
+        if (sort.column === "name" || sort.column === "roleName") {
+          comparison = accessCollator.compare(a[sort.column], b[sort.column]);
+        } else if (sort.column === "loginCount") {
+          comparison = a.loginCount - b.loginCount;
+        } else {
+          const aTime = Date.parse(a[sort.column] || "");
+          const bTime = Date.parse(b[sort.column] || "");
+          // Users without a recorded date stay at the end in either direction.
+          if (Number.isNaN(aTime) !== Number.isNaN(bTime)) return Number.isNaN(aTime) ? 1 : -1;
+          comparison = Number.isNaN(aTime) ? 0 : aTime - bTime;
+        }
+        return comparison * direction || accessCollator.compare(a.name, b.name) || accessCollator.compare(a.username, b.username) || a.id.localeCompare(b.id);
+      }),
+    [query, role, sort, state.users],
   );
   return (
     <section className="panel">
       <div className="panel-head">
         <div>
           <h2>Relatório de acesso</h2>
-          <p>Último login, última atividade e quantidade de entradas.</p>
+          <p>Clique nas colunas para ordenar. Combine a busca com o filtro de perfil.</p>
         </div>
         <button
           className="btn btn-soft"
@@ -393,22 +430,44 @@ export function AccessReportView({ state }: { state: AppState }) {
           <Download size={16} /> Exportar XLSX
         </button>
       </div>
-      <div className="report-filters">
+      <div className="report-filters access-report-filters">
         <label className="search">
           <Search size={17} />
-          <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Nome ou nome de usuário" />
+          <input aria-label="Buscar usuário no relatório de acessos" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Nome ou nome de usuário" />
         </label>
+        <label>Filtrar por perfil
         <select value={role} onChange={(event) => setRole(event.target.value)}>
           <option value="all">Todos os perfis</option>
-          {state.roles.map((item) => (
-            <option key={item.id} value={item.id}>{item.name}</option>
+          {roleOptions.map(([id, name]) => (
+            <option key={id} value={id}>{name}</option>
           ))}
         </select>
+        </label>
+        <label>Ordenar por
+          <select value={sort.column} onChange={event => chooseSort(event.target.value as AccessSortColumn)}>
+            {accessColumns.map(column => <option key={column.key} value={column.key}>{column.label}</option>)}
+          </select>
+        </label>
+        <label>Ordem
+          <select value={sort.direction} onChange={event => setSort(previous => ({ ...previous, direction: event.target.value as "asc" | "desc" }))}>
+            <option value="asc">{sort.column === "name" || sort.column === "roleName" ? "A a Z" : sort.column === "loginCount" ? "Menos logins primeiro" : "Mais antigos primeiro"}</option>
+            <option value="desc">{sort.column === "name" || sort.column === "roleName" ? "Z a A" : sort.column === "loginCount" ? "Mais logins primeiro" : "Mais recentes primeiro"}</option>
+          </select>
+        </label>
       </div>
+      <p className="access-report-count" role="status">{filtered.length} de {state.users.length} usuário(s)</p>
       <div className="access-table-wrap">
         <table className="stats-table">
           <thead>
-            <tr><th>Usuário</th><th>Perfil</th><th>Último login</th><th>Última atividade</th><th>Logins</th></tr>
+            <tr>{accessColumns.map(column => {
+              const selected = sort.column === column.key;
+              const Icon = selected ? sort.direction === "asc" ? ArrowUp : ArrowDown : ArrowUpDown;
+              return <th key={column.key} scope="col" aria-sort={selected ? sort.direction === "asc" ? "ascending" : "descending" : "none"}>
+                <button type="button" className="access-sort-button" onClick={() => chooseSort(column.key)} aria-label={`Ordenar por ${column.label}`}>
+                  {column.label}<Icon size={14} aria-hidden="true" />
+                </button>
+              </th>;
+            })}</tr>
           </thead>
           <tbody>
             {filtered.map((user) => (
@@ -422,6 +481,7 @@ export function AccessReportView({ state }: { state: AppState }) {
             ))}
           </tbody>
         </table>
+        {!filtered.length && <p className="muted">Nenhum usuário encontrado com os filtros selecionados.</p>}
       </div>
     </section>
   );

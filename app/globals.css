@@ -3543,6 +3543,13 @@ main {
   display: block;
   margin-top: 3px;
 }
+.access-report-filters { align-items: end; }
+.access-report-count { margin: 0; padding: 0 22px 14px; color: var(--muted); font-size: 11px; }
+.access-sort-button { display: inline-flex; align-items: center; gap: 6px; padding: 4px 0; border: 0; background: transparent; color: inherit; font: inherit; text-transform: inherit; letter-spacing: inherit; cursor: pointer; text-align: left; }
+.access-sort-button svg { flex-shrink: 0; }
+.access-sort-button:focus-visible { outline: 2px solid var(--brand); outline-offset: 4px; border-radius: 3px; }
+.access-table-wrap th[aria-sort="ascending"],
+.access-table-wrap th[aria-sort="descending"] { color: var(--brand-strong); }
 .ranking-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));

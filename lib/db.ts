@@ -1,6 +1,6 @@
 import { neon, type NeonQueryFunction } from "@neondatabase/serverless";
 import bcrypt from "bcryptjs";
-import { UNIT_MIGRATION_SQL, UNIT_SCHEMA_VERSION } from "./unit-schema";
+import { UNIT_MIGRATION_SQL, UNIT_RUNTIME_PATCH_SQL, UNIT_SCHEMA_VERSION } from "./unit-schema";
 import { unitContext } from "./unit-context";
 import { scopedDatabase } from "./scoped-database";
 import type { Permission } from "./types";
@@ -47,7 +47,7 @@ async function initialize() {
   const settingsExist = await db.query("SELECT to_regclass('app_settings') IS NOT NULL present");
   if (settingsExist[0]?.present) {
     const installed = await db.query("SELECT value FROM app_settings WHERE key=$1",[UNIT_SCHEMA_VERSION]);
-    if (installed.length) return;
+    if (installed.length) { await db.query(UNIT_RUNTIME_PATCH_SQL); return; }
   }
   await db.query(`CREATE TABLE IF NOT EXISTS roles (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(), name text UNIQUE NOT NULL, color text NOT NULL DEFAULT '#64748b',
@@ -391,6 +391,7 @@ async function initialize() {
     await ensurePreviewTestData(db);
   }
   await db.query(UNIT_MIGRATION_SQL);
+  await db.query(UNIT_RUNTIME_PATCH_SQL);
 }
 
 async function ensurePreviewTestData(db: NeonQueryFunction<false, false>) {

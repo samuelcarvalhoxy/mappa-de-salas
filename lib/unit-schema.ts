@@ -112,3 +112,22 @@ BEGIN
   END LOOP;
   INSERT INTO app_settings(key,value) VALUES('${UNIT_SCHEMA_VERSION}',now()::text);
 END $migration$`;
+
+
+// Repairs an overlapping legacy cold start that could replace the unit-aware counter.
+export const UNIT_RUNTIME_PATCH_SQL = `DO $patch$
+BEGIN
+  PERFORM pg_advisory_xact_lock(hashtext(current_schema() || ':mappa:units:v1'));
+  IF EXISTS (SELECT 1 FROM app_settings WHERE key='units_runtime_v2_20261027') THEN RETURN; END IF;
+  CREATE OR REPLACE FUNCTION count_booking_request_decision() RETURNS trigger LANGUAGE plpgsql AS $fn$
+  BEGIN
+    IF NEW.status IN ('approved','rejected') AND NOT NEW.decision_counted THEN
+      NEW.decision_kind := CASE WHEN NEW.status='approved' THEN 'approved' WHEN NEW.decision_kind='automatic_rejected' THEN 'automatic_rejected' ELSE 'manual_rejected' END;
+      INSERT INTO request_decision_totals(unit_id,decided_on,requester_key,room_key,outcome,decision_count)
+        VALUES(NEW.unit_id,(COALESCE(NEW.reviewed_at,now()) AT TIME ZONE 'America/Bahia')::date,NEW.requester_id::text,COALESCE(NEW.room_id::text,'any'),NEW.decision_kind,1)
+        ON CONFLICT(unit_id,decided_on,requester_key,room_key,outcome) DO UPDATE SET decision_count=request_decision_totals.decision_count+1;
+      NEW.decision_counted := true;
+    END IF; RETURN NEW;
+  END $fn$;
+  INSERT INTO app_settings(key,value) VALUES('units_runtime_v2_20261027',now()::text);
+END $patch$`;

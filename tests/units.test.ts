@@ -4,8 +4,8 @@ import { neon,neonConfig } from "@neondatabase/serverless";
 import { scopedDatabase } from "../lib/scoped-database.ts";
 import { unitContext } from "../lib/unit-context.ts";
 import { PGlite } from "@electric-sql/pglite";
-import { UNIT_MIGRATION_SQL,URUGUAI_ID,CABULA_ID,SAO_BENTO_ID } from "../lib/unit-schema.ts";
-import { EXPIRE_BOOKING_REQUESTS_SQL } from "../lib/request-expiration-sql.ts";
+import { UNIT_MIGRATION_SQL,UNIT_RUNTIME_PATCH_SQL,URUGUAI_ID,CABULA_ID,SAO_BENTO_ID } from "../lib/unit-schema.ts";
+import { EXPIRE_BOOKING_REQUESTS_SQL,REQUEST_EXPIRATION_SCHEMA } from "../lib/request-expiration-sql.ts";
 import { createUnitFixture,god,person,manager,room } from "./unit-fixture.ts";
 import { HANDOVER_SQL } from "../lib/unit-users-sql.ts";
 let db: PGlite;
@@ -119,4 +119,23 @@ test("pendência sem gestor habilitado para análise sinaliza GOD sem nomeação
    assert.ok(result.rows[0].recipients.includes(god));assert.ok(result.rows[0].recipients.includes(manager));
  });
  assert.equal((await db.query("SELECT * FROM room_review_responsibilities WHERE user_id=$1",[god])).rows.length,0);
+});
+
+
+test("patch de inicialização recupera contador local após inicializador legado concorrente",async()=>{
+ const legacy=REQUEST_EXPIRATION_SCHEMA.split("\n-- next\n").find(s=>s.includes("CREATE OR REPLACE FUNCTION count_booking_request_decision"))!;
+ await db.exec(legacy);
+ await db.exec(UNIT_RUNTIME_PATCH_SQL);
+ await db.exec(UNIT_RUNTIME_PATCH_SQL);
+ await scoped(SAO_BENTO_ID,god,"INSERT INTO booking_requests(requester_id,reason,requested_date,start_time,end_time) VALUES($1,'Expiração após reparo','2020-01-06','08:00','10:00')",[god]);
+ assert.equal((await scoped<{expired_count:number}>(SAO_BENTO_ID,god,EXPIRE_BOOKING_REQUESTS_SQL))[0].expired_count,1);
+ assert.equal((await scoped(SAO_BENTO_ID,god,"SELECT * FROM request_decision_totals")).length,1);
+});
+
+test("vínculo revogado não recebe alerta de expiração mesmo com responsabilidade antiga",async()=>{
+ await db.query(`UPDATE roles SET permissions='["booking.review"]' WHERE unit_id=$1 AND name='Gestão'`,[URUGUAI_ID]);
+ await db.query("UPDATE unit_memberships SET active=false WHERE user_id=$1 AND unit_id=$2",[manager,URUGUAI_ID]);
+ await scoped(URUGUAI_ID,god,"INSERT INTO booking_requests(requester_id,room_id,reason,requested_date,start_time,end_time) VALUES($1,$2,'Expiração','2020-01-06','08:00','10:00')",[god,room]);
+ const result=await scoped<{expired_count:number;staff_ids:string[]}>(URUGUAI_ID,god,EXPIRE_BOOKING_REQUESTS_SQL);
+ assert.equal(result[0].expired_count,1);assert.deepEqual(result[0].staff_ids,[]);
 });

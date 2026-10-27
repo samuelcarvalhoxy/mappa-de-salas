@@ -79,7 +79,7 @@ WITH expired AS (
   FROM messages m JOIN room_review_responsibilities rr ON (m.room_id=rr.room_id OR m.room_id IS NULL)
   JOIN rooms room ON room.id=rr.room_id AND room.active=true AND room.kind<>'virtual'
   JOIN users u ON u.id=rr.user_id JOIN roles r ON r.id=mappa_effective_role(u.id,u.role_id)
-  WHERE u.active=true AND u.deleted_at IS NULL AND (u.is_god=true OR r.permissions ? 'booking.review')
+  WHERE u.active=true AND u.deleted_at IS NULL AND mappa_user_in_unit(u.id) AND (u.is_god=true OR r.permissions ? 'booking.review')
 ), alerts AS (
   INSERT INTO request_expiry_alerts(request_id,user_id,message,created_at)
     SELECT request_id,user_id,message,now() FROM staff

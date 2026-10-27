@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { before,after,test } from "node:test";
 import { registerHooks } from "node:module";
-import { existsSync } from "node:fs";
+import { existsSync,readFileSync } from "node:fs";
 import { neonConfig } from "@neondatabase/serverless";
 import type { PGlite } from "@electric-sql/pglite";
 import { createUnitFixture,god,person,manager } from "./unit-fixture.ts";
@@ -101,4 +101,122 @@ test("GOD desativa globalmente uma conta sem apagar o histórico",async()=>{
  assert.equal((await db.query<{active:boolean}>("SELECT active FROM users WHERE id=$1",[person])).rows[0].active,false);
  assert.equal((await db.query("SELECT * FROM unit_memberships WHERE user_id=$1 AND active",[person])).rows.length,0);
  assert.equal((await db.query("SELECT * FROM reservations WHERE user_id=$1",[person])).rows.length,1);
+});
+
+async function multiUser() {
+ const result=await db.query<{id:string}>(`INSERT INTO users(name,username,password_hash,role_id,primary_unit_id)
+   SELECT 'Conta multiunidade','multi.'||gen_random_uuid()::text,'senha-preservada',id,$1 FROM roles WHERE unit_id=$1 AND name='Usuário' RETURNING id`,[URUGUAI_ID]);
+ const id=result.rows[0].id;
+ await db.query(`INSERT INTO unit_memberships(user_id,unit_id,role_id) VALUES($1,$2,$3)`,[id,URUGUAI_ID,await role(URUGUAI_ID)]);
+ return (await db.query<{id:string;name:string;username:string}>("SELECT id,name,username FROM users WHERE id=$1",[id])).rows[0];
+}
+async function activeUnits(id: string) {return (await db.query<{unit_id:string}>("SELECT unit_id FROM unit_memberships WHERE user_id=$1 AND active ORDER BY unit_id",[id])).rows.map(m=>m.unit_id);}
+
+test("GOD seleciona as três unidades com perfis independentes sem transferir identidade",async()=>{
+ const user=await multiUser();
+ const accesses=[{unitId:URUGUAI_ID,roleId:await role(URUGUAI_ID)},{unitId:CABULA_ID,roleId:await role(CABULA_ID,"Gestão")},{unitId:SAO_BENTO_ID,roleId:await role(SAO_BENTO_ID,"ADM")}];
+ const response=await save({...user,primaryUnitId:URUGUAI_ID,roleId:await role(URUGUAI_ID),unitAccesses:accesses});
+ assert.equal(response?.status,200);assert.deepEqual(await activeUnits(user.id),[URUGUAI_ID,CABULA_ID,SAO_BENTO_ID]);
+ const memberships=(await db.query<{unit_id:string;role_id:string}>("SELECT unit_id,role_id FROM unit_memberships WHERE user_id=$1",[user.id])).rows;
+ for(const access of accesses) assert.equal(memberships.find(m=>m.unit_id===access.unitId)?.role_id,access.roleId);
+ const identity=(await db.query<{primary_unit_id:string;password_hash:string;is_god:boolean}>("SELECT * FROM users WHERE id=$1",[user.id])).rows[0];
+ assert.equal(identity.primary_unit_id,URUGUAI_ID);assert.equal(identity.password_hash,'senha-preservada');assert.equal(identity.is_god,false);
+ assert.equal((await db.query("SELECT * FROM unit_handovers WHERE user_id=$1",[user.id])).rows.length,0);
+});
+
+test("trocar principal mantém unidades selecionadas; desmarcar revoga apenas a unidade e encaminha responsabilidades",async()=>{
+ const user=await multiUser();
+ const cabulaRole=await role(CABULA_ID,"Gestão"),uruguaiRole=await role(URUGUAI_ID);
+ const all=[{unitId:URUGUAI_ID,roleId:uruguaiRole},{unitId:CABULA_ID,roleId:cabulaRole}];
+ assert.equal((await save({...user,primaryUnitId:CABULA_ID,roleId:cabulaRole,unitAccesses:all}))?.status,200);
+ assert.deepEqual(await activeUnits(user.id),[URUGUAI_ID,CABULA_ID]);
+ const room=(await db.query<{id:string}>("INSERT INTO rooms(name,unit_id) VALUES('Sala teste Cabula',$1) RETURNING id",[CABULA_ID])).rows[0].id;
+ await db.transaction(async tx=>{
+   await tx.query("SELECT set_config('mappa.unit_id',$1,true)",[CABULA_ID]);
+   await tx.query("INSERT INTO room_review_responsibilities(room_id,user_id,assigned_by,unit_id) VALUES($1,$2,$3,$4)",[room,user.id,god,CABULA_ID]);
+   await tx.query("INSERT INTO reservations(room_id,user_id,reason,starts_at,ends_at,created_by,unit_id) VALUES($1,$2,'Teste','2099-10-05T12:00Z','2099-10-05T13:00Z',$3,$4)",[room,user.id,god,CABULA_ID]);
+ });
+ const remove={...user,primaryUnitId:URUGUAI_ID,roleId:uruguaiRole,unitAccesses:[all[0]]};
+ assert.equal((await save(remove))?.status,200);assert.deepEqual(await activeUnits(user.id),[URUGUAI_ID]);
+ assert.equal((await db.query("SELECT * FROM reservations WHERE user_id=$1 AND unit_id=$2",[user.id,CABULA_ID])).rows.length,1);
+ assert.equal((await db.query("SELECT * FROM room_review_responsibilities WHERE user_id=$1",[user.id])).rows.length,0);
+ assert.equal((await db.query("SELECT * FROM unit_handovers WHERE user_id=$1 AND unit_id=$2",[user.id,CABULA_ID])).rows.length,1);
+ assert.equal((await save(remove))?.status,200);
+ assert.equal((await db.query("SELECT * FROM unit_handovers WHERE user_id=$1",[user.id])).rows.length,1);
+ await db.transaction(async tx=>{
+   await tx.exec("SET LOCAL ROLE mappa_runtime");await tx.query("SELECT set_config('mappa.unit_id',$1,true),set_config('mappa.actor_id',$2,true)",[CABULA_ID,user.id]);
+   assert.equal((await tx.query("SELECT * FROM rooms")).rows.length,0);
+ });
+});
+
+test("seleção exige unidades únicas e perfil pertencente a cada unidade, sem GOD adicional",async()=>{
+ const user=await multiUser(),base={...user,primaryUnitId:URUGUAI_ID,roleId:await role(URUGUAI_ID)};
+ const primary={unitId:URUGUAI_ID,roleId:base.roleId};
+ for(const unitAccesses of [[{unitId:URUGUAI_ID,roleId:await role(URUGUAI_ID,"Gestão")}],[primary,primary],[primary,{unitId:CABULA_ID,roleId:base.roleId}],[primary,{unitId:CABULA_ID,roleId:await role(CABULA_ID,"God")}],[primary,{unitId:'inválido',roleId:base.roleId}]]) {
+   assert.equal((await save({...base,unitAccesses}))?.status,400);
+   assert.deepEqual(await activeUnits(user.id),[URUGUAI_ID]);
+ }
+ assert.equal((await save({...base,unitAccesses:[primary]},manager))?.status,403);
+});
+
+test("gestor de unidade adicional edita apenas o perfil local e não troca unidade principal nem dados globais",async()=>{
+ const user=await multiUser(),primaryRole=await role(URUGUAI_ID),localRole=await role(CABULA_ID);
+ await db.query("INSERT INTO unit_memberships(user_id,unit_id,role_id) VALUES($1,$2,$3),($4,$2,$5) ON CONFLICT(user_id,unit_id) DO UPDATE SET active=true",[user.id,CABULA_ID,localRole,manager,await role(CABULA_ID,"Gestão")]);
+ const base={...user,primaryUnitId:URUGUAI_ID,roleId:localRole};
+ assert.equal((await save(base,manager,CABULA_ID))?.status,200);
+ const actual=(await db.query<{primary_unit_id:string;role_id:string}>("SELECT primary_unit_id,role_id FROM users WHERE id=$1",[user.id])).rows[0];
+ assert.equal(actual.primary_unit_id,URUGUAI_ID);assert.equal(actual.role_id,primaryRole);
+ assert.equal((await save({...base,primaryUnitId:CABULA_ID},manager,CABULA_ID))?.status,403);
+ assert.equal((await save({...base,name:'Nome global alterado'},manager,CABULA_ID))?.status,403);
+ assert.equal((await save({...base,active:false},manager,CABULA_ID))?.status,200);
+ assert.deepEqual(await activeUnits(user.id),[URUGUAI_ID]);
+});
+
+test("formulário antigo não sobrescreve concessões recentes de acesso",async()=>{
+ const user=await multiUser(),primary={unitId:URUGUAI_ID,roleId:await role(URUGUAI_ID)};
+ const version=(await db.query<{version:string}>("SELECT updated_at::text version FROM users WHERE id=$1",[user.id])).rows[0].version;
+ const base={...user,primaryUnitId:URUGUAI_ID,roleId:primary.roleId,expectedAccessVersion:version};
+ assert.equal((await save({...base,unitAccesses:[primary,{unitId:CABULA_ID,roleId:await role(CABULA_ID)}]}))?.status,200);
+ assert.equal((await save({...base,unitAccesses:[primary]}))?.status,409);
+ assert.deepEqual(await activeUnits(user.id),[URUGUAI_ID,CABULA_ID]);
+});
+
+test("desativação global encerra os acessos múltiplos selecionados preservando a conta",async()=>{
+ const user=await multiUser(),unitAccesses=[{unitId:URUGUAI_ID,roleId:await role(URUGUAI_ID)},{unitId:CABULA_ID,roleId:await role(CABULA_ID)}];
+ const base={...user,primaryUnitId:URUGUAI_ID,roleId:unitAccesses[0].roleId,unitAccesses};
+ assert.equal((await save(base))?.status,200);
+ assert.equal((await save({...base,globalActive:false}))?.status,200);
+ assert.deepEqual(await activeUnits(user.id),[]);
+ assert.equal((await db.query<{active:boolean}>("SELECT active FROM users WHERE id=$1",[user.id])).rows[0].active,false);
+});
+
+
+test("edição preserva unidade principal sem acesso e permite retirar todos os acessos sem apagar conta",async()=>{
+ const user=await multiUser(),base={...user,primaryUnitId:URUGUAI_ID,roleId:await role(URUGUAI_ID)};
+ assert.equal((await save({...base,unitAccesses:[{unitId:CABULA_ID,roleId:await role(CABULA_ID)}]}))?.status,200);
+ assert.deepEqual(await activeUnits(user.id),[CABULA_ID]);
+ assert.equal((await save({...base,unitAccesses:[]}))?.status,200);assert.deepEqual(await activeUnits(user.id),[]);
+ assert.equal((await db.query<{active:boolean}>("SELECT active FROM users WHERE id=$1",[user.id])).rows[0].active,true);
+});
+
+test("consulta real do cadastro retorna vínculos e versão somente na administração autorizada",async()=>{
+ const user=await multiUser(),source=readFileSync(new URL('../app/api/state/route.ts',import.meta.url),'utf8');
+ const query=source.match(/`(SELECT u.updated_at::text access_version[\s\S]*?ORDER BY u.name)`/)![1];
+ await db.transaction(async tx=>{
+   await tx.exec("SET LOCAL ROLE mappa_runtime");await tx.query("SELECT set_config('mappa.unit_id',$1,true),set_config('mappa.actor_id',$2,true)",[URUGUAI_ID,god]);
+   const godRows=(await tx.query<{id:string;access_version:string;unit_accesses:{unitId:string;roleId:string;active:boolean}[]}>(query,[false,true])).rows;
+   const row=godRows.find(row=>row.id===user.id)!;assert.ok(row.access_version);assert.equal(row.unit_accesses[0].unitId,URUGUAI_ID);assert.equal(row.unit_accesses[0].active,true);
+   const managerRows=(await tx.query<{id:string;unit_accesses:null}>(query,[false,false])).rows;
+   assert.equal(managerRows.find(row=>row.id===user.id)!.unit_accesses,null);
+ });
+});
+
+
+test("gestor pode retirar acesso secundário sem alterar a unidade principal",async()=>{
+ const user=await multiUser();
+ await db.query("INSERT INTO unit_memberships(user_id,unit_id,role_id) VALUES($1,$2,$3)",[user.id,CABULA_ID,await role(CABULA_ID)]);
+ assert.equal((await save({action:"user.delete",id:user.id},manager,CABULA_ID))?.status,403);
+ await db.query(`UPDATE roles SET permissions=permissions || '["user.delete"]'::jsonb WHERE unit_id=$1 AND name='Gestão'`,[CABULA_ID]);
+ assert.equal((await save({action:"user.delete",id:user.id},manager,CABULA_ID))?.status,200);
+ assert.deepEqual(await activeUnits(user.id),[URUGUAI_ID]);
 });

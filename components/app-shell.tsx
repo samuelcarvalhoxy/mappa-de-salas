@@ -5965,12 +5965,18 @@ function UserModal({
   const editingUser=user || linkedUser;
   const [primaryUnitId,setPrimaryUnitId]=useState(user?.primaryUnitId || state.activeUnit?.id || "");
   const roleCatalog=canCreateGod && state.unitRoles?.length ? state.unitRoles : state.roles;
-  const availableRoles=roleCatalog.filter(role=>(!role.unitId || role.unitId===primaryUnitId) && (role.name!=="God" || canCreateGod) &&
+  const availableRoles=roleCatalog.filter(role=>(!role.unitId || role.unitId===(canCreateGod ? primaryUnitId : state.activeUnit?.id)) && (role.name!=="God" || canCreateGod) &&
     canManagePermissionChanges({actorPermissions:state.currentUser?.permissions || [],actorIsGod:Boolean(state.currentUser?.isGod),currentPermissions:roleCatalog.find(r=>r.id===editingUser?.roleId)?.permissions || [],nextPermissions:role.permissions}));
-  const initialRole=availableRoles.find(r=>r.id===user?.roleId) || availableRoles.find(r=>r.name===user?.roleName) || availableRoles.find(r=>r.name==="Usuário") || availableRoles[0];
+  const initialRole=availableRoles.find(r=>r.id===user?.unitAccesses?.find(access=>access.unitId===user.primaryUnitId)?.roleId) || availableRoles.find(r=>r.id===user?.roleId) || availableRoles.find(r=>r.name===user?.roleName) || availableRoles.find(r=>r.name==="Usuário") || availableRoles[0];
   const [name,setName]=useState(user?.name || "");
   const [username,setUsername]=useState(user?.username || "");
   const [roleId,setRoleId]=useState(initialRole?.id || "");
+  const [accessRoles,setAccessRoles]=useState<Record<string,string>>(()=>Object.fromEntries([
+    ...(user?.unitAccesses || []).filter(access=>access.active).map(access=>[access.unitId,access.roleId]),
+    ...(!user || !user.unitAccesses ? [[user?.primaryUnitId || state.activeUnit?.id || "",initialRole?.id || ""]] : []),
+  ]));
+  const isGodRole=roleCatalog.find(role=>role.id===roleId)?.name==="God";
+  const removedUnits=state.units?.filter(unit=>editingUser?.unitAccesses?.some(access=>access.unitId===unit.id && access.active) && !accessRoles[unit.id] && !isGodRole) || [];
   const [password, setPassword] = useState("");
   const [active, setActive] = useState(user?.active !== false);
   const [globalActive,setGlobalActive]=useState(user?.globalActive!==false);
@@ -5991,11 +5997,13 @@ function UserModal({
           onSave({
             id: editingUser?.id,
             primaryUnitId,expectedPrimaryUnitId:editingUser?.primaryUnitId,
+            expectedAccessVersion:editingUser?.accessVersion,
+            unitAccesses:canCreateGod && !isGodRole ? Object.entries(accessRoles).map(([unitId,localRoleId])=>({unitId,roleId:unitId===primaryUnitId ? roleId : localRoleId})) : undefined,
             name,
             username,
             roleId,
             password,
-            active,globalActive:canCreateGod ? globalActive : undefined,
+            active:canCreateGod && !isGodRole ? true : active,globalActive:canCreateGod ? globalActive : undefined,
             securityAnswers: showAnswers ? answers : [],
           });
         }}
@@ -6005,17 +6013,50 @@ function UserModal({
             const selected=state.directoryUsers?.find(person=>person.id===event.target.value) || null;
             setLinkedUser(selected);setGlobalActive(selected?.globalActive!==false);setActive(true);setName(selected?.name || "");setUsername(selected?.username || "");setPassword("");
             const chosen=availableRoles.find(role=>role.name===selected?.roleName) || availableRoles.find(role=>role.name==="Usuário");setRoleId(chosen?.id || "");
+            setAccessRoles(Object.fromEntries([...(selected?.unitAccesses || []).filter(access=>access.active).map(access=>[access.unitId,access.roleId]),[primaryUnitId,chosen?.id || ""]]));
           }}><option value="">Criar uma nova conta</option>{state.directoryUsers?.filter(person=>!person.isGod).map(person=><option key={person.id} value={person.id}>{person.name} (@{person.username})</option>)}</select>
-          <small className="field-help">Trazer uma conta existente preserva o login e o histórico. O acesso anterior será encerrado ao transferir.</small>
+          <small className="field-help">Usar uma conta existente preserva o login e o histórico. Selecione abaixo as unidades que ela poderá acessar.</small>
         </label>}
-        <label>Unidade principal
-          <select value={primaryUnitId} disabled={!canCreateGod} onChange={event=>{
+        {canCreateGod ? <label>Unidade principal
+          <select value={primaryUnitId} onChange={event=>{
             const next=event.target.value;setPrimaryUnitId(next);
             const current=roleCatalog.find(role=>role.id===roleId);
-            const selected=roleCatalog.find(role=>role.unitId===next && role.name===current?.name) || roleCatalog.find(role=>role.unitId===next && role.name==="Usuário");setRoleId(selected?.id || "");
+            const selected=(!isGodRole && roleCatalog.find(role=>role.id===accessRoles[next])) || roleCatalog.find(role=>role.unitId===next && role.name===current?.name) || roleCatalog.find(role=>role.unitId===next && role.name==="Usuário");setRoleId(selected?.id || "");
+            setAccessRoles(old=>({...old,[next]:old[next] || selected?.id || ""}));
           }}>{state.units?.map(unit=><option value={unit.id} key={unit.id}>{unit.name}</option>)}</select>
-        </label>
-        {editingUser && editingUser.primaryUnitId!==primaryUnitId && <p className="replacement-notice">A transferência preservará as reservas e o histórico na unidade de origem. Pendências e responsabilidades serão encaminhadas à gestão anterior ou sinalizadas aos GODs.</p>}
+          <small className="field-help">A unidade principal é a preferência de entrada. O usuário terá acesso somente às unidades marcadas.</small>
+        </label> : <label>Unidade deste acesso<input value={state.activeUnit?.name || ""} disabled /></label>}
+        {canCreateGod && <fieldset className="user-unit-accesses">
+          <legend>Unidades com acesso</legend>
+          <small className="field-help">{isGodRole ? "Contas GOD têm acesso automático a todas as unidades." : "Marque todas as unidades que o usuário poderá acessar e escolha o perfil de cada uma."}</small>
+          {state.units?.map(unit=>{
+            const primary=unit.id===primaryUnitId;
+            const selected=isGodRole || unit.id in accessRoles;
+            const unitRoleId=primary ? roleId : accessRoles[unit.id];
+            return <div className="user-unit-access" key={unit.id}>
+              <label className="check-row">
+                <input type="checkbox" aria-label={`Acesso a ${unit.name}`} checked={selected} disabled={isGodRole} onChange={event=>{
+                  const enabled=event.target.checked;
+                  setAccessRoles(old=>{
+                    const next={...old};
+                    if (enabled) next[unit.id]=roleCatalog.find(role=>role.unitId===unit.id && role.name==="Usuário")?.id || "";
+                    else delete next[unit.id];
+                    return next;
+                  });
+                }}/>
+                <span><strong>{unit.name}</strong>{primary && <small>Unidade principal</small>}</span>
+              </label>
+              {selected && !primary && !isGodRole && <label>Perfil em {unit.name}
+                <select aria-label={`Perfil em ${unit.name}`} value={unitRoleId || ""} required onChange={event=>setAccessRoles(old=>({...old,[unit.id]:event.target.value}))}>
+                  <option value="" disabled>Selecione um perfil</option>
+                  {roleCatalog.filter(role=>role.unitId===unit.id && role.name!=="God").map(role=><option value={role.id} key={role.id}>{role.name}</option>)}
+                </select>
+              </label>}
+            </div>;
+          })}
+          {!isGodRole && Object.keys(accessRoles).length===0 && <small className="field-help">Sem unidades selecionadas, o usuário não poderá entrar no Mappa.</small>}
+        </fieldset>}
+        {removedUnits.length>0 && <p className="replacement-notice">Acesso retirado de {removedUnits.map(unit=>unit.name).join(", ")}. As reservas e o histórico serão preservados; as pendências serão encaminhadas à gestão de cada unidade ou sinalizadas aos GODs.</p>}
         <div className="form-grid">
           <label>
             Nome completo
@@ -6036,10 +6077,10 @@ function UserModal({
         </div>
         <div className="form-grid">
           <label>
-            Perfil
+            {canCreateGod ? "Perfil na unidade principal" : "Perfil nesta unidade"}
             <select
               value={roleId}
-              onChange={(event) => setRoleId(event.target.value)}
+              onChange={(event) => {setRoleId(event.target.value);setAccessRoles(old=>primaryUnitId in old ? {...old,[primaryUnitId]:event.target.value} : old);}}
               disabled={editingUser?.isOwnerGod}
             >
               {availableRoles.map((role) => (
@@ -6085,7 +6126,7 @@ function UserModal({
             )}
           </fieldset>
         )}
-        {editingUser && !editingUser.isOwnerGod && (
+        {editingUser && !editingUser.isOwnerGod && (!canCreateGod || isGodRole) && (
           <label className="check-row">
             <input
               type="checkbox"

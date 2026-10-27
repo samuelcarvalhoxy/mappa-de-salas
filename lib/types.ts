@@ -174,7 +174,10 @@ export type Role = {
   permissions: Permission[];
   system: boolean;
 };
+export type UnitAccess = { unitId: string; roleId: string; active: boolean };
 export type ManagedUser = {
+  unitAccesses?: UnitAccess[];
+  accessVersion?: string;
   globalActive?: boolean;
   primaryUnitId?: string;
   updatedAt?: string;

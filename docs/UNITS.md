@@ -5,8 +5,8 @@
 - CABULA, SÃO BENTO e URUGUAI usam o mesmo aplicativo.
 - O acervo atual e os acessos comuns são associados a URUGUAI. CABULA e SÃO BENTO começam sem salas, reservas, solicitações ou usuários comuns.
 - As contas GOD existentes têm acesso global, sem duplicação. Cada pessoa comum vê somente as unidades às quais possui vínculo ativo.
-- Uma conta, uma senha, unidade principal e vínculos com perfil independente por unidade. O primeiro lançamento não oferece concessão de acessos adicionais a não GODs; a estrutura está preparada para essa evolução.
-- Cadastro preenche a unidade aberta e permite ao GOD alterar unidade e perfil. O seletor de conta existente permite transferir sem duplicar a identidade.
+- Uma conta, uma senha, unidade principal e vínculos com perfil independente por unidade. Na edição do usuário, GODs selecionam todas as unidades autorizadas e um perfil independente em cada uma. Gestores locais administram apenas o vínculo de sua unidade e não concedem acessos adicionais.
+- Cadastro preenche a unidade aberta e permite ao GOD alterar a unidade principal e selecionar acessos adicionais. A unidade principal é a preferência de entrada; se não houver acesso a ela, o aplicativo abre a primeira unidade autorizada. Nenhuma unidade selecionada bloqueia o acesso operacional sem apagar a conta. Alterar somente a principal mantém os demais acessos; desmarcar uma unidade revoga o vínculo e encaminha suas pendências. O seletor de conta existente permite ampliar acessos ou transferir sem duplicar a identidade. A versão do cadastro impede que uma edição antiga sobrescreva acessos mais recentes.
 - Transferência e remoção local preservam reservas e histórico na origem. Pendências são sinalizadas à gestão anterior; responsabilidades são redistribuídas a gestores com análise habilitada. Na ausência de gestores elegíveis, GODs recebem a sinalização, sem nomeação implícita como responsáveis.
 - Alertas das responsabilidades em outras unidades continuam ativos e identificam a unidade. O acesso global de GOD não cria responsabilidades automaticamente.
 

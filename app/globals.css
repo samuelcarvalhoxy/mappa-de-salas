@@ -4235,3 +4235,7 @@ main {
 .unit-handover-panel article { display: flex; align-items: center; gap: 14px; margin-top: 10px; font-size: 12px; line-height: 1.5; }
 .unit-handover-panel article p { flex: 1; }
 @media(max-width:780px) { .unit-switcher { padding: 8px 14px 0; } .unit-switcher button { flex: 1; padding: 9px; } .unit-handover-panel article { align-items: stretch; flex-direction: column; } }
+
+.user-unit-access { display: grid; gap: 9px; }
+.user-unit-access > label:not(.check-row) { padding: 0 12px 5px; }
+.user-unit-accesses .check-row { align-items: center; }

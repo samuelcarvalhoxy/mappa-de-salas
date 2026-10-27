@@ -149,14 +149,14 @@ async function handleGET(request: NextRequest) {
       permissions.includes("booking.manage_all") ||
       user.is_god)
         ? db.query(
-            `SELECT u.active global_active,u.id,u.name,u.username,u.primary_unit_id,u.updated_at,mappa_effective_role(u.id,u.role_id) role_id,r.name role_name,CASE WHEN u.is_god THEN u.active ELSE u.active AND COALESCE((SELECT active FROM unit_memberships WHERE user_id=u.id AND unit_id=mappa_current_unit()),false) END active,u.is_god,u.is_owner_god,
+            `SELECT u.updated_at::text access_version,CASE WHEN $2::boolean THEN (SELECT COALESCE(jsonb_agg(jsonb_build_object('unitId',m.unit_id,'roleId',m.role_id,'active',m.active) ORDER BY m.unit_id),'[]'::jsonb) FROM unit_memberships m WHERE m.user_id=u.id) ELSE NULL END unit_accesses,u.active global_active,u.id,u.name,u.username,u.primary_unit_id,u.updated_at,mappa_effective_role(u.id,u.role_id) role_id,r.name role_name,CASE WHEN u.is_god THEN u.active ELSE u.active AND COALESCE((SELECT active FROM unit_memberships WHERE user_id=u.id AND unit_id=mappa_current_unit()),false) END active,u.is_god,u.is_owner_god,
       jsonb_array_length(u.security_answers) security_answer_count,
       CASE WHEN $1::boolean THEN u.last_login_at ELSE NULL END last_login_at,
       CASE WHEN $1::boolean THEN u.last_seen_at ELSE NULL END last_seen_at,
       CASE WHEN $1::boolean THEN u.login_count ELSE 0 END login_count,
       u.request_reminders_enabled
       FROM users u JOIN roles r ON r.id=mappa_effective_role(u.id,u.role_id) WHERE u.deleted_at IS NULL AND mappa_user_in_unit(u.id,true) ORDER BY u.name`,
-            [canAccessReport],
+            [canAccessReport,Boolean(user.is_god)],
           )
         : Promise.resolve([]),
       !syncOnly && permissions.includes("audit.view")
@@ -210,7 +210,7 @@ async function handleGET(request: NextRequest) {
   const handovers = user.is_god || permissions.includes("user.manage") || permissions.includes("booking.review")
     ? await db.query(`SELECT id,summary,created_at "createdAt" FROM unit_handovers WHERE reviewed_at IS NULL ORDER BY created_at`) : [];
   const unitRoles=!syncOnly && user.is_god ? await rawSql().query(`SELECT id,name,color,permissions,system,unit_id "unitId" FROM roles ORDER BY name`) : [];
-  const directoryUsers=!syncOnly && user.is_god ? await rawSql().query(`SELECT u.id,u.name,u.username,u.role_id "roleId",r.name "roleName",u.primary_unit_id "primaryUnitId",u.updated_at "updatedAt",u.active "globalActive",u.active,u.is_god "isGod",u.is_owner_god "isOwnerGod" FROM users u JOIN roles r ON r.id=u.role_id WHERE u.deleted_at IS NULL ORDER BY u.name`) : [];
+  const directoryUsers=!syncOnly && user.is_god ? await rawSql().query(`SELECT u.id,u.name,u.username,u.role_id "roleId",r.name "roleName",u.primary_unit_id "primaryUnitId",u.updated_at "updatedAt",u.updated_at::text "accessVersion",(SELECT COALESCE(jsonb_agg(jsonb_build_object('unitId',m.unit_id,'roleId',m.role_id,'active',m.active) ORDER BY m.unit_id),'[]'::jsonb) FROM unit_memberships m WHERE m.user_id=u.id) "unitAccesses",u.active "globalActive",u.active,u.is_god "isGod",u.is_owner_god "isOwnerGod" FROM users u JOIN roles r ON r.id=u.role_id WHERE u.deleted_at IS NULL ORDER BY u.name`) : [];
   if (syncOnly)
     return NextResponse.json({ activeUnit,units,handovers,additionalDutyRequests,
       configured: true,
@@ -374,7 +374,7 @@ async function handleGET(request: NextRequest) {
     })),
     roles,
     users: users.map((u) => ({
-      primaryUnitId:u.primary_unit_id,updatedAt:u.updated_at,globalActive:u.global_active,
+      primaryUnitId:u.primary_unit_id,updatedAt:u.updated_at,globalActive:u.global_active,accessVersion:u.access_version,unitAccesses:u.unit_accesses ?? undefined,
       id: u.id,
       name: u.name,
       username: u.username,

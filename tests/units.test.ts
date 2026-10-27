@@ -109,3 +109,14 @@ test("transporte Neon mantém contexto por transação em consultas individuais,
    assert.throws(()=>scopedDatabase(raw),/UNIT_CONTEXT_REQUIRED/);
  } finally {neonConfig.fetchFunction=original;}
 });
+
+
+test("pendência sem gestor habilitado para análise sinaliza GOD sem nomeação automática",async()=>{
+ await db.query(`UPDATE roles SET permissions='["user.manage"]' WHERE unit_id=$1 AND name='Gestão'`,[URUGUAI_ID]);
+ await db.transaction(async tx=>{
+   await tx.query("SELECT set_config('mappa.unit_id',$1,true)",[URUGUAI_ID]);
+   const result=await tx.query<{recipients:string[]}>(HANDOVER_SQL,[god,URUGUAI_ID,CABULA_ID,god]);
+   assert.ok(result.rows[0].recipients.includes(god));assert.ok(result.rows[0].recipients.includes(manager));
+ });
+ assert.equal((await db.query("SELECT * FROM room_review_responsibilities WHERE user_id=$1",[god])).rows.length,0);
+});

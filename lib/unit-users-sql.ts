@@ -7,7 +7,7 @@ export const HANDOVER_SQL = `WITH pending AS MATERIALIZED (
   SELECT u.id,r.permissions FROM unit_memberships m JOIN users u ON u.id=m.user_id JOIN roles r ON r.id=m.role_id
   WHERE m.unit_id=$2 AND m.active AND u.active AND u.deleted_at IS NULL AND u.id<>$1 AND (r.permissions ? 'user.manage' OR r.permissions ? 'booking.review')
 ), recipients AS MATERIALIZED (
-  SELECT id FROM managers UNION SELECT id FROM users WHERE is_god AND active AND deleted_at IS NULL AND NOT EXISTS(SELECT 1 FROM managers)
+  SELECT id FROM managers UNION SELECT id FROM users WHERE is_god AND active AND deleted_at IS NULL AND (NOT EXISTS(SELECT 1 FROM managers) OR ((SELECT rooms+requests FROM pending)>0 AND NOT EXISTS(SELECT 1 FROM managers WHERE permissions ? 'booking.review')))
 ), old_rooms AS MATERIALIZED (SELECT room_id FROM room_review_responsibilities WHERE user_id=$1 AND unit_id=$2),
 removed AS (DELETE FROM room_review_responsibilities WHERE user_id=$1 AND unit_id=$2 RETURNING room_id),
 assigned AS (INSERT INTO room_review_responsibilities(room_id,user_id,assigned_by,unit_id)

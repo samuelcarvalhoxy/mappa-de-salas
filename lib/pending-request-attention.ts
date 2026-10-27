@@ -53,6 +53,7 @@ export function parsePendingDutyCache(raw: string | null): PendingDutySnapshot |
 }
 
 export function writePendingDutyCache(snapshot: PendingDutySnapshot | null,identity?: {userId:string;unitId:string;unitCode:string}) {
+  localStorage.removeItem("mappa-pending-duty-v1");
   if (!snapshot) {
     if(identity) {
       const key=`${PENDING_DUTY_CACHE_KEY}:${identity.userId}:${identity.unitId}`;

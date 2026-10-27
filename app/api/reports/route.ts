@@ -52,12 +52,12 @@ async function handleGET() {
       ),
       db.query(
         `SELECT u.id user_id,u.name user_name,count(*)::int count FROM feedback_reports f
-         JOIN users u ON u.id=f.reporter_id WHERE f.created_at>=now()-interval '90 days' AND f.type='bug'
+         JOIN users u ON u.id=f.reporter_id WHERE f.unit_id=mappa_current_unit() AND f.created_at>=now()-interval '90 days' AND f.type='bug'
          GROUP BY u.id,u.name ORDER BY count DESC,u.name LIMIT 10`,
       ),
       db.query(
         `SELECT u.id user_id,u.name user_name,count(*)::int count FROM feedback_reports f
-         JOIN users u ON u.id=f.reporter_id WHERE f.created_at>=now()-interval '90 days' AND f.type='suggestion'
+         JOIN users u ON u.id=f.reporter_id WHERE f.unit_id=mappa_current_unit() AND f.created_at>=now()-interval '90 days' AND f.type='suggestion'
          GROUP BY u.id,u.name ORDER BY count DESC,u.name LIMIT 10`,
       ),
     ]);

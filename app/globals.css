@@ -2308,26 +2308,33 @@ main {
 .agenda-table-wrap {
   overflow-x: auto;
 }
+.agenda-table-wrap:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: -2px;
+}
 .agenda-table {
   width: 100%;
   border-collapse: collapse;
-  min-width: 1040px;
+  /* Fixed columns total 1040px; leave at least 240px for the reason. */
+  min-width: 1280px;
   table-layout: fixed;
 }
-.agenda-table th:nth-child(1),
-.agenda-table td:nth-child(1) { width: 118px; }
-.agenda-table th:nth-child(2),
-.agenda-table td:nth-child(2) { width: 170px; }
-.agenda-table th:nth-child(3),
-.agenda-table td:nth-child(3) { width: 100px; }
-.agenda-table th:nth-child(4),
-.agenda-table td:nth-child(4) { width: 128px; }
-.agenda-table th:nth-child(5),
-.agenda-table td:nth-child(5) { width: 175px; }
-.agenda-table th:nth-child(7),
-.agenda-table td:nth-child(7) { width: 105px; }
-.agenda-table th:nth-child(8),
-.agenda-table td:nth-child(8) { width: 210px; }
+@media (min-width: 781px) {
+  .agenda-table th:nth-child(1),
+  .agenda-table td:nth-child(1) { width: 118px; }
+  .agenda-table th:nth-child(2),
+  .agenda-table td:nth-child(2) { width: 170px; }
+  .agenda-table th:nth-child(3),
+  .agenda-table td:nth-child(3) { width: 100px; }
+  .agenda-table th:nth-child(4),
+  .agenda-table td:nth-child(4) { width: 128px; }
+  .agenda-table th:nth-child(5),
+  .agenda-table td:nth-child(5) { width: 175px; }
+  .agenda-table th:nth-child(7),
+  .agenda-table td:nth-child(7) { width: 105px; }
+  .agenda-table th:nth-child(8),
+  .agenda-table td:nth-child(8) { width: 244px; }
+}
 .agenda-table th,
 .agenda-table td {
   text-align: left;
@@ -2335,6 +2342,7 @@ main {
   border-bottom: 1px solid var(--line);
   font-size: 11px;
   vertical-align: middle;
+  overflow-wrap: anywhere;
 }
 .agenda-table th {
   color: var(--muted);
@@ -2354,7 +2362,10 @@ main {
   align-items: center;
   gap: 8px;
 }
-.agenda-row-actions {
+.agenda-person-name {
+  min-width: 0;
+}
+.agenda-row-action-buttons {
   display: flex;
   align-items: center;
   justify-content: flex-end;
@@ -3657,7 +3668,7 @@ main {
     border: 0;
     padding: 6px 0;
     display: grid;
-    grid-template-columns: 120px 1fr;
+    grid-template-columns: 120px minmax(0, 1fr);
     gap: 10px;
   }
   .agenda-table td:before {
@@ -3668,9 +3679,14 @@ main {
     font-weight: 800;
   }
   .agenda-table td.agenda-row-actions {
-    display: flex;
-    justify-content: flex-start;
+    display: block;
     padding-top: 10px;
+  }
+  .agenda-table td.agenda-row-actions:before {
+    display: none;
+  }
+  .agenda-row-action-buttons {
+    justify-content: flex-start;
   }
   .security-status {
     order: 4;

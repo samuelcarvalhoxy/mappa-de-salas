@@ -2769,7 +2769,7 @@ function CalendarView({
       </div>
       {agendaError && <div className="inline-error">{agendaError}</div>}
       {!agendaLoading && filtered.length ? (
-        <div className="agenda-table-wrap">
+        <div className="agenda-table-wrap" role="region" aria-label="Reservas da agenda" tabIndex={0}>
           <table className="agenda-table">
             <thead>
               <tr>
@@ -2822,7 +2822,7 @@ function CalendarView({
                         <span className="avatar small">
                           {reservation.userName.slice(0, 2).toUpperCase()}
                         </span>
-                        {reservation.userName}
+                        <span className="agenda-person-name">{reservation.userName}</span>
                       </span>
                     </td>
                     <td data-label="Motivo">{reservation.reason}</td>
@@ -2831,48 +2831,50 @@ function CalendarView({
                         {statusLabel(reservation.status)}
                       </span>
                     </td>
-                    <td className="agenda-row-actions">
-                      {canCheckout && (
-                        <button
-                          className="btn btn-primary"
-                          onClick={() => onCheckout(reservation)}
-                        >
-                          <Check size={15} /> Finalizar agora
-                        </button>
-                      )}
-                      {canEdit && (
-                        <button
-                          className="btn btn-soft"
-                          onClick={() => onEdit(reservation)}
-                        >
-                          Editar
-                        </button>
-                      )}
-                      {reservation.seriesId &&
-                        (reservation.userId === state.currentUser?.id ||
-                          can("booking.manage_all")) &&
-                        reservation.status === "reserved" && (
+                    <td className="agenda-row-actions" data-label="Ações">
+                      <div className="agenda-row-action-buttons">
+                        {canCheckout && (
+                          <button
+                            className="btn btn-primary"
+                            onClick={() => onCheckout(reservation)}
+                          >
+                            <Check size={15} /> Finalizar agora
+                          </button>
+                        )}
+                        {canEdit && (
                           <button
                             className="btn btn-soft"
-                            title="Cancelar todo o período futuro"
-                            onClick={() => onCancelSeries(reservation)}
+                            onClick={() => onEdit(reservation)}
                           >
-                            <CalendarRange size={15} /> Período
+                            Editar
                           </button>
                         )}
-                      {(reservation.userId === state.currentUser?.id ||
-                        can("booking.manage_all")) &&
-                        reservation.status === "reserved" && (
-                          <button
-                            className="icon-btn danger"
-                            title="Cancelar reserva"
-                            type="button"
-                            aria-label={`Cancelar reserva de ${reservation.userName}`}
-                            onClick={() => onCancel(reservation)}
-                          >
-                            <X size={17} />
-                          </button>
-                        )}
+                        {reservation.seriesId &&
+                          (reservation.userId === state.currentUser?.id ||
+                            can("booking.manage_all")) &&
+                          reservation.status === "reserved" && (
+                            <button
+                              className="btn btn-soft"
+                              title="Cancelar todo o período futuro"
+                              onClick={() => onCancelSeries(reservation)}
+                            >
+                              <CalendarRange size={15} /> Período
+                            </button>
+                          )}
+                        {(reservation.userId === state.currentUser?.id ||
+                          can("booking.manage_all")) &&
+                          reservation.status === "reserved" && (
+                            <button
+                              className="icon-btn danger"
+                              title="Cancelar reserva"
+                              type="button"
+                              aria-label={`Cancelar reserva de ${reservation.userName}`}
+                              onClick={() => onCancel(reservation)}
+                            >
+                              <X size={17} />
+                            </button>
+                          )}
+                      </div>
                     </td>
                   </tr>
                 );

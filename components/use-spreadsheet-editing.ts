@@ -1,19 +1,19 @@
 "use client";
 
 import { useEffect, useRef, useState, type ClipboardEvent, type DragEvent, type HTMLAttributes, type KeyboardEvent, type RefObject } from "react";
-import { captureSheetSelection, prepareSheetTransfer, sheetBounds, sheetCancellationEntries, type SheetCancellationEntry, type SheetClipboard, type SheetPosition, type SheetSelection, type SheetTransfer } from "@/lib/spreadsheet-bookings";
+import { captureSheetSelection, prepareSheetTransfer, sheetBounds, sheetCancellationEntries, type SheetLayout, type SheetCancellationEntry, type SheetClipboard, type SheetPosition, type SheetSelection, type SheetTransfer } from "@/lib/spreadsheet-bookings";
 import type { Reservation, Room } from "@/lib/types";
 import type { MapShift } from "@/lib/map-shifts";
 
-export function useSpreadsheetEditing({ rooms, dates, shifts, index, canCopy, canMove, canCancel, onDelete, surfaceRef }: {
+export function useSpreadsheetEditing({ rooms, dates, shifts, layout = "week", index, canCopy, canMove, canCancel, onDelete, surfaceRef }: {
   rooms: Room[]; dates: string[]; index: Map<string, Reservation[]>;
-  shifts: readonly MapShift[];
+  shifts: readonly MapShift[]; layout?: SheetLayout;
   canCopy: boolean; canMove: (reservation: Reservation) => boolean;
   canCancel: (reservation: Reservation) => boolean;
   onDelete: (entries: SheetCancellationEntry[]) => Promise<void>;
   surfaceRef: RefObject<HTMLElement | null>;
 }) {
-  const viewKey = `${dates[0]}:${rooms.map((room) => room.id).join(",")}:${shifts.map((shift) => shift.id).join(",")}`;
+  const viewKey = `${layout}:${dates[0]}:${rooms.map((room) => room.id).join(",")}:${shifts.map((shift) => shift.id).join(",")}`;
   const [storedSelection, setStoredSelection] = useState<(SheetSelection & { viewKey: string }) | null>(null);
   const selection = storedSelection?.viewKey === viewKey ? storedSelection : null;
   const [clipboard, setClipboard] = useState<SheetClipboard | null>(null);
@@ -61,7 +61,7 @@ export function useSpreadsheetEditing({ rooms, dates, shifts, index, canCopy, ca
   }
   function capture(mode: SheetClipboard["mode"], range = selection) {
     if (!range) throw new Error("Selecione uma célula ou um intervalo primeiro.");
-    const snapshot = captureSheetSelection(range, rooms, dates, index, mode, shifts);
+    const snapshot = captureSheetSelection(range, rooms, dates, index, mode, shifts, layout);
     if (mode === "move" && (!snapshot.items.length || snapshot.items.some((item) => !canMove(item.reservation))))
       throw new Error("Você só pode recortar reservas atuais ou futuras que tem permissão para editar.");
     return snapshot;
@@ -79,7 +79,7 @@ export function useSpreadsheetEditing({ rooms, dates, shifts, index, canCopy, ca
     try {
       if (!canCopy && snapshot?.mode === "copy") throw new Error("Seu perfil pode copiar o texto, mas não criar agendamentos diretamente.");
       if (!snapshot || !target) throw new Error("Copie ou recorte agendamentos e selecione uma célula de destino.");
-      const transfer = prepareSheetTransfer(snapshot, target, rooms, dates, shifts);
+      const transfer = prepareSheetTransfer(snapshot, target, rooms, dates, shifts, layout);
       setPending({ transfer, clipboard: snapshot });
       setMessage("");
     } catch (error) { setMessage(error instanceof Error ? error.message : "Destino inválido."); }
@@ -106,7 +106,7 @@ export function useSpreadsheetEditing({ rooms, dates, shifts, index, canCopy, ca
     event.preventDefault();
     const row = Number(cell.dataset.sheetRow) + (event.key === "ArrowDown" ? 1 : event.key === "ArrowUp" ? -1 : 0);
     const column = Number(cell.dataset.sheetColumn) + (event.key === "ArrowRight" ? 1 : event.key === "ArrowLeft" ? -1 : 0);
-    const next = { row: Math.max(0, Math.min(rooms.length * shifts.length - 1, row)), column: Math.max(0, Math.min(dates.length - 1, column)) };
+    const next = { row: Math.max(0, Math.min((layout === "day" ? rooms.length : rooms.length * shifts.length) - 1, row)), column: Math.max(0, Math.min((layout === "day" ? shifts.length : dates.length) - 1, column)) };
     select(next, event.shiftKey);
     cell.closest(".room-spreadsheet-scroll")?.querySelector<HTMLElement>(`[data-sheet-row="${next.row}"][data-sheet-column="${next.column}"]`)?.focus();
   }

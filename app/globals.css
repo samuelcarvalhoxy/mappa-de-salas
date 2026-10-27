@@ -4162,3 +4162,61 @@ main {
   .sidebar nav button.responsible-pending { animation: none; background: #ffe000; outline: 2px solid #26e67b; }
   .pending-request-waves { display: none; }
 }
+
+/* Size the grid itself so browser controls and dialogs retain their normal size. */
+.sheet-view-toolbar {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 8px;
+  padding: 6px 8px; border-bottom: 1px solid var(--line); background: var(--surface-2);
+}
+.sheet-view-toolbar .btn { min-height: 32px; padding: 6px 9px; font-size: 12px; }
+.sheet-view-toolbar .mode-toggle { padding: 2px; }
+.sheet-view-toolbar .mode-toggle button { min-height: 30px; padding: 5px 12px; font-size: 12px; }
+.sheet-view-toolbar [aria-pressed="true"] { box-shadow: inset 0 0 0 1px var(--brand); }
+.sheet-zoom-controls { display: flex; align-items: center; gap: 6px; }
+.sheet-zoom-controls label { display: flex; align-items: center; gap: 6px; font-size: 11px; }
+.sheet-zoom-controls input { width: 100px; accent-color: var(--brand); }
+.sheet-zoom-controls .icon-btn { width: 32px; height: 32px; }
+.sheet-zoom-controls output { min-width: 70px; text-align: center; font-size: 11px; font-variant-numeric: tabular-nums; }
+.sheet-view-toolbar .sheet-fullscreen { margin-left: auto; }
+.sheet-readable .room-spreadsheet-table { content-visibility: visible; }
+.sheet-readable .room-spreadsheet-table thead { position: sticky; top: 0; z-index: 4; }
+.sheet-readable .room-spreadsheet-tables { min-width: calc(1080px * var(--sheet-scale, 1)); }
+.sheet-day .room-spreadsheet-tables { min-width: calc(680px * var(--sheet-scale, 1)); }
+.sheet-readable .room-spreadsheet-table th:first-child { width: calc(180px * var(--sheet-scale, 1)); }
+.sheet-day .room-spreadsheet-table th:first-child { width: 24%; }
+.sheet-readable .spreadsheet-date-row th { font-size: calc(12px * var(--sheet-scale, 1)); padding: 4px; }
+.sheet-readable .spreadsheet-weekday-row th { font-size: calc(10px * var(--sheet-scale, 1)); padding: 3px; }
+.sheet-readable .room-spreadsheet-table tbody tr,
+.sheet-readable .room-spreadsheet-table tbody td,
+.sheet-readable .room-spreadsheet-table tbody th { height: var(--sheet-row-height, 44px); padding: 0; line-height: 0; }
+.sheet-readable .room-spreadsheet-table tbody th button,
+.sheet-readable .spreadsheet-cell-free > button,
+.sheet-readable .spreadsheet-reservation-row,
+.sheet-readable .spreadsheet-reservation {
+  height: calc(var(--sheet-row-height, 44px) - 2px); min-height: 0;
+}
+.sheet-readable .room-spreadsheet-table tbody th button { padding: 2px 8px; line-height: 1.2; }
+.sheet-readable .room-spreadsheet-table tbody th strong { font-size: clamp(11px, calc(var(--sheet-row-height, 44px) * .27), 18px); }
+.sheet-readable .spreadsheet-reservation {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto; grid-template-rows: 1fr 1fr;
+  align-items: center; column-gap: 4px; padding: 1px 20px 1px 4px; line-height: 1.15;
+}
+.sheet-readable .spreadsheet-reservation strong { grid-column: 1 / -1; font-size: clamp(11px, calc(var(--sheet-row-height, 44px) * .28), 18px); }
+.sheet-readable .spreadsheet-reservation span,
+.sheet-readable .spreadsheet-reservation small { margin: 0; font-size: clamp(10px, calc(var(--sheet-row-height, 44px) * .24), 16px); }
+.sheet-readable .spreadsheet-reservation small { width: auto; }
+.sheet-readable .spreadsheet-free-label { font-size: clamp(11px, calc(var(--sheet-row-height, 44px) * .27), 18px); line-height: 1.2; }
+.sheet-readable .spreadsheet-reservation em { font-size: 10px; line-height: 1.1; }
+.sheet-readable .spreadsheet-cell-sunday span { display: block; font-size: 11px; line-height: 1.2; }
+.sheet-day .spreadsheet-reservation { grid-template-columns: 1fr; grid-template-rows: 1fr 1fr 1fr; }
+.sheet-day .spreadsheet-reservation strong { font-size: clamp(12px, calc(var(--sheet-row-height, 64px) * .25), 22px); }
+.sheet-day .spreadsheet-reservation span,
+.sheet-day .spreadsheet-reservation small { font-size: clamp(11px, calc(var(--sheet-row-height, 64px) * .22), 20px); }
+.sheet-day .room-spreadsheet-table tbody th strong { white-space: normal; }
+.sheet-day .room-spreadsheet-table tbody th small { display: block; font-size: clamp(10px, calc(var(--sheet-row-height, 64px) * .17), 14px); }
+@media (max-width: 780px) {
+  .sheet-view-toolbar { align-items: stretch; }
+  .sheet-view-toolbar .sheet-fullscreen { margin-left: 0; }
+  .sheet-zoom-controls { flex-wrap: wrap; }
+  .sheet-readable .sheet-edit-toolbar { flex-wrap: wrap; }
+}

@@ -1840,6 +1840,7 @@ function RoomMap({
   const [filter, setFilter] = useState("all");
   const [viewMode, setViewMode] = useState<"cards" | "spreadsheet">("cards");
   const [showSheetControls, setShowSheetControls] = useState(false);
+  const [sheetLayout, setSheetLayout] = useState<"day" | "week">("day");
   useEffect(() => () => onViewModeChange("cards"), [onViewModeChange]);
   const [selectedShiftId, setSelectedShiftId] = useState(() =>
     mapShiftForNow(state.now),
@@ -1945,9 +1946,9 @@ function RoomMap({
     if (cursor < shiftEnd) intervals.push({ start: cursor, end: shiftEnd });
     return intervals;
   };
-  const spreadsheetStart = new Date(`${spreadsheetStartDate}T08:00:00-03:00`);
+  const spreadsheetStart = new Date(`${sheetLayout === "day" ? selectedDate : spreadsheetStartDate}T08:00:00-03:00`);
   const spreadsheetEnd = new Date(
-    `${spreadsheetExtraEndDate}T07:00:00-03:00`,
+    `${sheetLayout === "day" ? addDays(selectedDate, 1) : spreadsheetExtraEndDate}T07:00:00-03:00`,
   );
   const spreadsheetReservationsFor = (roomId: string) =>
     reservations.filter(
@@ -1996,7 +1997,7 @@ function RoomMap({
   const changeDate = (nextDate: string) => {
     if (/^\d{4}-\d{2}-\d{2}$/.test(nextDate)) onSelectedDateChange(nextDate);
   };
-  const navigationStep = viewMode === "spreadsheet" ? 7 : 1;
+  const navigationStep = viewMode === "spreadsheet" && sheetLayout === "week" ? 7 : 1;
   return (
     <section className={`room-map ${viewMode === "spreadsheet" ? "room-map-sheet" : ""}`}>
       <div className="map-date-bar" aria-busy={dayLoading}>
@@ -2006,7 +2007,7 @@ function RoomMap({
           </span>
           <div>
             <strong>
-              {viewMode === "spreadsheet"
+              {viewMode === "spreadsheet" && sheetLayout === "week"
                 ? `${requestDateLabel(spreadsheetStartDate)} a ${requestDateLabel(spreadsheetEndDate)}`
                 : isToday
                   ? "Hoje"
@@ -2014,7 +2015,7 @@ function RoomMap({
             </strong>
             <small>
               {viewMode === "spreadsheet"
-                ? "Semana completa, com domingo na última coluna"
+                ? sheetLayout === "week" ? "Semana completa, com domingo na última coluna" : "Manhã e tarde lado a lado"
                 : `Status referente ao turno ${selectedShift.name.toLowerCase()}, das ${selectedShift.startTime} às ${selectedShift.endTime}`}
             </small>
           </div>
@@ -2197,7 +2198,9 @@ function RoomMap({
             await onSheetTransfer(transfer);
             setReloadDay((value) => value + 1);
           }}
-          startDate={spreadsheetStartDate}
+          startDate={selectedDate}
+          layout={sheetLayout}
+          onLayoutChange={setSheetLayout}
           rooms={filtered}
           reservations={reservations}
           now={state.now}

@@ -13,12 +13,17 @@ import {
   Trash2,
   Pencil,
   X,
+  Maximize,
+  Minimize,
+  ZoomIn,
+  ZoomOut,
+  Scan,
 } from "lucide-react";
 import { MAP_SHIFTS, mapShiftBounds, type MapShift } from "@/lib/map-shifts";
 import { isSundayDate, startOfWeekMonday } from "@/lib/calendar-utils";
 import type { Reservation, Room } from "@/lib/types";
 import { addDays, time } from "./app-shell-utils";
-import { sheetBounds, type SheetCancellationEntry, type SheetPosition, type SheetTransfer } from "@/lib/spreadsheet-bookings";
+import { sheetBounds, type SheetLayout, type SheetCancellationEntry, type SheetPosition, type SheetTransfer } from "@/lib/spreadsheet-bookings";
 import { useSpreadsheetEditing, type SpreadsheetEditing } from "./use-spreadsheet-editing";
 import { SheetTransferDialog } from "./sheet-transfer-dialog";
 
@@ -95,19 +100,19 @@ async function exportSpreadsheetMap(
   const workbook = new ExcelJS.Workbook();
   workbook.creator = "Mappa de Salas";
   workbook.created = new Date();
-  const sheet = workbook.addWorksheet("Mapa semanal", {
+  const sheet = workbook.addWorksheet(dates.length === 1 ? "Mapa diário" : "Mapa semanal", {
     views: [{ state: "frozen", xSplit: 1 }],
     pageSetup: { orientation: "landscape", fitToPage: true, fitToWidth: 1 },
   });
   sheet.getColumn(1).width = 28;
-  for (let column = 2; column <= 8; column += 1)
+  for (let column = 2; column <= dates.length + 1; column += 1)
     sheet.getColumn(column).width = 24;
 
   let rowNumber = 1;
   for (const shift of shifts) {
     const title = sheet.getRow(rowNumber);
     title.getCell(1).value = `SALAS ${shift.name.toLocaleUpperCase("pt-BR")} · ${shift.startTime} às ${shift.endTime}`;
-    sheet.mergeCells(rowNumber, 1, rowNumber, 8);
+    sheet.mergeCells(rowNumber, 1, rowNumber, dates.length + 1);
     title.height = 24;
     title.font = { bold: true, color: { argb: "FFFFFFFF" } };
     title.fill = {
@@ -210,7 +215,7 @@ async function exportSpreadsheetMap(
   );
   const link = document.createElement("a");
   link.href = url;
-  link.download = `mapa-de-salas-semana-${dates[0]}.xlsx`;
+  link.download = `mapa-de-salas-${dates.length === 1 ? "dia" : "semana"}-${dates[0]}.xlsx`;
   link.style.display = "none";
   document.body.append(link);
   link.click();
@@ -351,6 +356,7 @@ function SpreadsheetCell({
 }
 
 function SpreadsheetShift({
+  dayShifts,
   editing,
   shiftIndex,
   canMove,
@@ -366,6 +372,7 @@ function SpreadsheetShift({
   onCancel,
   onSchedule,
 }: {
+  dayShifts?: readonly MapShift[];
   editing: SpreadsheetEditing;
   shiftIndex: number;
   canMove: (reservation: Reservation) => boolean;
@@ -381,30 +388,33 @@ function SpreadsheetShift({
   onCancel: (reservation: Reservation) => void;
   onSchedule: (room: Room, date: string, shift: MapShift) => void;
 }) {
+  const columns = dayShifts
+    ? dayShifts.map((columnShift) => ({ date: dates[0], shift: columnShift }))
+    : dates.map((date) => ({ date, shift }));
   return (
-    <table className="room-spreadsheet-table" role="grid" aria-label={`Planilha do turno ${shift.name}`}>
+    <table className="room-spreadsheet-table" role="grid" aria-label={dayShifts ? "Planilha diária de salas" : `Planilha do turno ${shift.name}`}>
       <thead>
         <tr className="spreadsheet-date-row">
-          <th scope="col">SALAS {shift.name.toLocaleUpperCase("pt-BR")}</th>
-          {dates.map((date) => (
+          <th scope="col">{dayShifts ? "SALAS" : `SALAS ${shift.name.toLocaleUpperCase("pt-BR")}`}</th>
+          {columns.map(({ date, shift: columnShift }) => (
             <th
               scope="col"
               className={isSundayDate(date) ? "sunday" : ""}
-              key={date}
+              key={`${date}:${columnShift.id}`}
             >
-              {spreadsheetDateLabel(date)}
+              {dayShifts ? columnShift.name : spreadsheetDateLabel(date)}
             </th>
           ))}
         </tr>
         <tr className="spreadsheet-weekday-row">
-          <th scope="col">{shift.startTime} às {shift.endTime}</th>
-          {dates.map((date) => (
+          <th scope="col">{dayShifts ? spreadsheetDateLabel(dates[0]) : `${shift.startTime} às ${shift.endTime}`}</th>
+          {columns.map(({ date, shift: columnShift }) => (
             <th
               scope="col"
               className={isSundayDate(date) ? "sunday" : ""}
-              key={date}
+              key={`${date}:${columnShift.id}`}
             >
-              {spreadsheetWeekdayLabel(date)}
+              {dayShifts ? `${columnShift.startTime} às ${columnShift.endTime}` : spreadsheetWeekdayLabel(date)}
             </th>
           ))}
         </tr>
@@ -422,17 +432,17 @@ function SpreadsheetShift({
                 <small>{room.location || "Local não informado"}</small>
               </button>
             </th>
-            {dates.map((date, dateIndex) => (
+            {columns.map(({ date, shift: columnShift }, dateIndex) => (
               <SpreadsheetCell
                 editing={editing}
-                position={{ row: shiftIndex * rooms.length + roomIndex, column: dateIndex }}
+                position={{ row: dayShifts ? roomIndex : shiftIndex * rooms.length + roomIndex, column: dateIndex }}
                 canMove={canMove}
                 room={room}
                 date={date}
-                shift={shift}
+                shift={columnShift}
                 cellReservations={
                   reservationIndex.get(
-                    spreadsheetCellKey(room.id, date, shift.id),
+                    spreadsheetCellKey(room.id, date, columnShift.id),
                   ) || []
                 }
                 now={now}
@@ -442,7 +452,7 @@ function SpreadsheetShift({
                 onEdit={onEdit}
                 onCancel={onCancel}
                 onSchedule={onSchedule}
-                key={`${room.id}:${date}:${shift.id}`}
+                key={`${room.id}:${date}:${columnShift.id}`}
               />
             ))}
           </tr>
@@ -460,6 +470,8 @@ export function RoomMapSpreadsheet({
   canMoveOwn,
   onTransfer,
   startDate,
+  layout = "week",
+  onLayoutChange,
   rooms,
   reservations,
   now,
@@ -478,6 +490,8 @@ export function RoomMapSpreadsheet({
   canMoveOwn: boolean;
   onTransfer: (transfer: SheetTransfer) => Promise<void>;
   startDate: string;
+  layout?: SheetLayout;
+  onLayoutChange?: (layout: SheetLayout) => void;
   rooms: Room[];
   reservations: Reservation[];
   now: string;
@@ -490,13 +504,16 @@ export function RoomMapSpreadsheet({
   onBulkCancel: () => void;
 }) {
   const [exporting, setExporting] = useState(false);
+  const [fitToScreen, setFitToScreen] = useState(true);
+  const [zoom, setZoom] = useState(100);
+  const [fullscreen, setFullscreen] = useState(false);
   const weekStart = startOfWeekMonday(startDate);
   const dates = useMemo(
     () =>
-      Array.from({ length: SPREADSHEET_DAYS }, (_, index) =>
+      layout === "day" ? [startDate] : Array.from({ length: SPREADSHEET_DAYS }, (_, index) =>
         addDays(weekStart, index),
       ),
-    [weekStart],
+    [weekStart, startDate, layout],
   );
   const reservationIndex = useMemo(
     () => buildReservationIndex(reservations, dates),
@@ -511,8 +528,13 @@ export function RoomMapSpreadsheet({
   const canCancel = (reservation: Reservation) => reservation.status === "reserved" && new Date(reservation.endsAt) > new Date(now)
     && (canManage || reservation.userId === currentUserId);
   const sheetElement = useRef<HTMLElement>(null);
-  const editing = useSpreadsheetEditing({ rooms, dates, shifts: visibleShifts, index: reservationIndex, canCopy, canMove, canCancel, onDelete, surfaceRef: sheetElement });
+  const editing = useSpreadsheetEditing({ rooms, dates, shifts: visibleShifts, layout, index: reservationIndex, canCopy, canMove, canCancel, onDelete, surfaceRef: sheetElement });
   const roomCount = rooms.length;
+  useEffect(() => {
+    const syncFullscreen = () => setFullscreen(Boolean(document.fullscreenElement));
+    document.addEventListener("fullscreenchange", syncFullscreen);
+    return () => document.removeEventListener("fullscreenchange", syncFullscreen);
+  }, []);
   useEffect(() => {
     const element = sheetElement.current;
     if (!element) return;
@@ -520,27 +542,48 @@ export function RoomMapSpreadsheet({
     const fit = () => {
       cancelAnimationFrame(frame);
       frame = requestAnimationFrame(() => {
-        if (!window.matchMedia("(min-width: 781px)").matches || !roomCount) {
-          element.style.removeProperty("--sheet-row-height");
-          return;
-        }
-        const tables = Array.from(element.querySelectorAll<HTMLTableElement>(".room-spreadsheet-table")).slice(0, 2);
-        const first = tables[0];
-        if (!first) return;
-        const headers = tables.reduce((sum, table) => sum + (table.tHead?.getBoundingClientRect().height || 0), 0);
-        const height = Math.max(14, Math.min(40, Math.floor((window.innerHeight - first.getBoundingClientRect().top - headers - 20) / (roomCount * tables.length))));
+        const scroll = element.querySelector<HTMLElement>(".room-spreadsheet-scroll");
+        const tables = Array.from(element.querySelectorAll<HTMLTableElement>(".room-spreadsheet-table"));
+        if (!scroll || !tables.length) return;
+        const desktop = window.matchMedia("(min-width: 781px)").matches;
+        const available = Math.max(160, Math.floor(window.innerHeight - scroll.getBoundingClientRect().top - 16));
+        const fittedTables = layout === "day" ? tables : tables.slice(0, 2);
+        const headers = fittedTables.reduce((sum, table) => sum + (table.tHead?.getBoundingClientRect().height || 0) + 4, 0);
+        const minimum = layout === "day" ? 44 : 28;
+        const automatic = Math.max(minimum, Math.min(layout === "day" ? 110 : 80,
+          Math.floor((available - headers) / Math.max(1, roomCount * fittedTables.length))));
+        const height = fitToScreen && desktop ? automatic : Math.round((layout === "day" ? 64 : 40) * zoom / 100);
         element.style.setProperty("--sheet-row-height", `${height}px`);
+        element.style.setProperty("--sheet-scale", `${fitToScreen ? 1 : zoom / 100}`);
+        scroll.style.maxHeight = desktop ? `${available}px` : "none";
       });
     };
     const observer = new ResizeObserver(fit);
-    // Observe controls that move the sheet without resizing the viewport.
     const main = element.closest("main");
     if (main) observer.observe(main);
     observer.observe(element);
     window.addEventListener("resize", fit);
+    document.addEventListener("fullscreenchange", fit);
     fit();
-    return () => { cancelAnimationFrame(frame); observer.disconnect(); window.removeEventListener("resize", fit); };
-  }, [sheetElement, roomCount, visibleShifts]);
+    return () => {
+      cancelAnimationFrame(frame); observer.disconnect();
+      window.removeEventListener("resize", fit);
+      document.removeEventListener("fullscreenchange", fit);
+    };
+  }, [roomCount, visibleShifts, layout, fitToScreen, zoom]);
+  const changeZoom = (value: number) => {
+    setZoom(Math.max(75, Math.min(200, value)));
+    setFitToScreen(false);
+  };
+  const toggleFullscreen = async () => {
+    try {
+      if (document.fullscreenElement) await document.exitFullscreen();
+      else if (document.documentElement.requestFullscreen) await document.documentElement.requestFullscreen();
+      else editing.setMessage("Tela cheia indisponível neste navegador. Use Ajustar à tela ou o zoom da planilha.");
+    } catch {
+      editing.setMessage("O navegador não permitiu abrir a tela cheia. Use Ajustar à tela ou o zoom da planilha.");
+    }
+  };
   const bounds = editing.selection ? sheetBounds(editing.selection) : null;
   const selectedCount = bounds ? (bounds.bottom - bounds.top + 1) * (bounds.right - bounds.left + 1) : 0;
 
@@ -554,7 +597,7 @@ export function RoomMapSpreadsheet({
   };
 
   return (
-    <section ref={sheetElement} className="room-spreadsheet sheet-fit" aria-label="Mapa de salas em planilha"
+    <section ref={sheetElement} className={`room-spreadsheet sheet-fit sheet-readable sheet-${layout} ${fitToScreen ? "sheet-auto" : "sheet-manual"}`} aria-label="Mapa de salas em planilha"
       onCopy={(event) => editing.onClipboard(event, "copy")}
       onCut={(event) => editing.onClipboard(event, "move")}
       onPaste={(event) => editing.onClipboard(event, "paste")}
@@ -562,7 +605,7 @@ export function RoomMapSpreadsheet({
       <div className="room-spreadsheet-guide">
         <div>
           <CalendarRange size={18} />
-          <span>Semana completa, de segunda a domingo</span>
+          <span>{layout === "day" ? `Dia ${spreadsheetDateLabel(startDate)}` : "Semana completa, de segunda a domingo"}</span>
         </div>
         <div>
           <Clock3 size={18} />
@@ -573,6 +616,20 @@ export function RoomMapSpreadsheet({
           <span><i className="booked" /> Reservada</span>
           <span><i className="sunday" /> Domingo</span>
         </div>
+      </div>
+      <div className="sheet-view-toolbar" aria-label="Visualização da planilha">
+        {onLayoutChange && <div className="mode-toggle" role="group" aria-label="Período da planilha">
+          <button type="button" aria-pressed={layout === "day"} className={layout === "day" ? "active" : ""} onClick={() => onLayoutChange("day")}>Dia</button>
+          <button type="button" aria-pressed={layout === "week"} className={layout === "week" ? "active" : ""} onClick={() => onLayoutChange("week")}>Semana</button>
+        </div>}
+        <button type="button" className="btn btn-soft" aria-pressed={fitToScreen} onClick={() => setFitToScreen(true)}><Scan size={16} /> Ajustar à tela</button>
+        <div className="sheet-zoom-controls" role="group" aria-label="Zoom da planilha">
+          <button type="button" className="icon-btn" aria-label="Diminuir zoom da planilha" disabled={!fitToScreen && zoom <= 75} onClick={() => changeZoom(zoom - 25)}><ZoomOut size={16} /></button>
+          <label>Zoom <input type="range" aria-label="Zoom da planilha em porcentagem" min="75" max="200" step="25" value={zoom} onChange={(event) => changeZoom(Number(event.target.value))} /></label>
+          <output aria-live="polite">{fitToScreen ? "Automático" : `${zoom}%`}</output>
+          <button type="button" className="icon-btn" aria-label="Aumentar zoom da planilha" disabled={!fitToScreen && zoom >= 200} onClick={() => changeZoom(zoom + 25)}><ZoomIn size={16} /></button>
+        </div>
+        <button type="button" className="btn btn-soft sheet-fullscreen" aria-pressed={fullscreen} onClick={() => void toggleFullscreen()}>{fullscreen ? <Minimize size={16} /> : <Maximize size={16} />}{fullscreen ? "Sair da tela cheia" : "Tela cheia"}</button>
       </div>
       <div className="sheet-edit-toolbar" aria-label="Ações da seleção">
         <span>{selectedCount ? `${selectedCount} célula(s) selecionada(s)` : "Selecione uma célula"}</span>
@@ -600,8 +657,9 @@ export function RoomMapSpreadsheet({
       {editing.message && <p className="sheet-status" role="status">{editing.message}</p>}
       <div className="room-spreadsheet-scroll" tabIndex={0}>
         <div className="room-spreadsheet-tables">
-          {visibleShifts.map((shift, shiftIndex) => (
+          {(layout === "day" ? visibleShifts.slice(0, 1) : visibleShifts).map((shift, shiftIndex) => (
             <SpreadsheetShift
+              dayShifts={layout === "day" ? visibleShifts : undefined}
               editing={editing}
               shiftIndex={shiftIndex}
               canMove={canMove}

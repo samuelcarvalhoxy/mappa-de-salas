@@ -2,10 +2,12 @@ import type { Reservation, Room } from "./types.ts";
 import { MAP_SHIFTS, mapShiftBounds, type MapShift } from "./map-shifts.ts";
 import { bahiaDateKey, isSundayDate } from "./calendar-utils.ts";
 
+export type SheetLayout = "week" | "day";
 export type SheetPosition = { row: number; column: number };
 export type SheetSelection = { anchor: SheetPosition; focus: SheetPosition };
 export type SheetClipboard = {
   mode: "copy" | "move";
+  layout?: SheetLayout;
   text: string;
   items: { reservation: Reservation; sourceDate: string; sourceShiftId: string; rowOffset: number; columnOffset: number }[];
   rows: number;
@@ -62,18 +64,18 @@ export function sheetBounds(selection: SheetSelection) {
   };
 }
 
-export function sheetCell(position: SheetPosition, rooms: Room[], dates: string[], shifts: readonly MapShift[] = MAP_SHIFTS) {
+export function sheetCell(position: SheetPosition, rooms: Room[], dates: string[], shifts: readonly MapShift[] = MAP_SHIFTS, layout: SheetLayout = "week") {
   if (position.row < 0 || position.column < 0 || !rooms.length) return null;
-  const room = rooms[position.row % rooms.length];
-  const shift = shifts[Math.floor(position.row / rooms.length)];
-  const date = dates[position.column];
+  const room = rooms[layout === "day" ? position.row : position.row % rooms.length];
+  const shift = shifts[layout === "day" ? position.column : Math.floor(position.row / rooms.length)];
+  const date = dates[layout === "day" ? 0 : position.column];
   return room && shift && date ? { room, shift, date } : null;
 }
 
 export function captureSheetSelection(
   selection: SheetSelection, rooms: Room[], dates: string[],
   index: Map<string, Reservation[]>, mode: SheetClipboard["mode"],
-  shifts: readonly MapShift[] = MAP_SHIFTS,
+  shifts: readonly MapShift[] = MAP_SHIFTS, layout: SheetLayout = "week",
 ): SheetClipboard {
   const bounds = sheetBounds(selection);
   const seen = new Set<string>();
@@ -82,7 +84,7 @@ export function captureSheetSelection(
   for (let row = bounds.top; row <= bounds.bottom; row++) {
     const cells: string[] = [];
     for (let column = bounds.left; column <= bounds.right; column++) {
-      const cell = sheetCell({ row, column }, rooms, dates, shifts);
+      const cell = sheetCell({ row, column }, rooms, dates, shifts, layout);
       if (!cell) throw new Error("A seleção não está mais disponível. Selecione as células novamente.");
       const reservations = index.get(`${cell.room.id}:${cell.date}:${cell.shift.id}`) || [];
       cells.push(reservations.map((reservation) =>
@@ -97,16 +99,17 @@ export function captureSheetSelection(
     }
     lines.push(cells.join("\t"));
   }
-  return { mode, items, text: lines.join("\n"), rows: bounds.bottom - bounds.top + 1, columns: bounds.right - bounds.left + 1 };
+  return { mode, layout, items, text: lines.join("\n"), rows: bounds.bottom - bounds.top + 1, columns: bounds.right - bounds.left + 1 };
 }
 
-export function prepareSheetTransfer(clipboard: SheetClipboard, target: SheetPosition, rooms: Room[], dates: string[], shifts: readonly MapShift[] = MAP_SHIFTS): SheetTransfer {
+export function prepareSheetTransfer(clipboard: SheetClipboard, target: SheetPosition, rooms: Room[], dates: string[], shifts: readonly MapShift[] = MAP_SHIFTS, layout: SheetLayout = "week"): SheetTransfer {
+  if ((clipboard.layout || "week") !== layout) throw new Error("Copie a seleção novamente neste modo de visualização.");
   if (!clipboard.items.length) throw new Error("A seleção não contém agendamentos.");
   if (clipboard.items.length > 100) throw new Error("Selecione no máximo 100 agendamentos por operação.");
-  if (!sheetCell({ row: target.row + clipboard.rows - 1, column: target.column + clipboard.columns - 1 }, rooms, dates, shifts))
+  if (!sheetCell({ row: target.row + clipboard.rows - 1, column: target.column + clipboard.columns - 1 }, rooms, dates, shifts, layout))
     throw new Error("A seleção ultrapassa as salas ou os dias visíveis. Escolha outra célula de destino.");
   return { mode: clipboard.mode, entries: clipboard.items.map((item) => {
-    const destination = sheetCell({ row: target.row + item.rowOffset, column: target.column + item.columnOffset }, rooms, dates, shifts);
+    const destination = sheetCell({ row: target.row + item.rowOffset, column: target.column + item.columnOffset }, rooms, dates, shifts, layout);
     const sourceShift = MAP_SHIFTS.find((shift) => shift.id === item.sourceShiftId);
     if (!destination || !sourceShift) throw new Error("Destino indisponível.");
     if (isSundayDate(destination.date)) throw new Error("Domingos não são dias disponíveis para agendamento.");

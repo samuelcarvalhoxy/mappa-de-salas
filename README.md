@@ -33,7 +33,11 @@ Arraste a reserva selecionada ou sua alça para outra sala, dia ou turno. Duplo 
 
 DEL ou o botão Excluir remove todas as reservas da seleção após uma única confirmação. Reservas que aparecem em mais de uma célula são contadas uma vez. A exclusão admite até 1.000 reservas atuais ou futuras, próprias ou com `booking.manage_all`, preserva o histórico e é aplicada por inteiro. ESC ou clique fora da planilha desfaz a seleção.
 
-Ao entrar em Planilha, a lateral é recolhida e os controles superiores são condensados. Os filtros ficam acessíveis pelo botão Filtros. No computador, as linhas ajustam sua altura ao espaço da tela para exibir a semana dos turnos Manhã e Tarde.
+Ao entrar em Planilha, a lateral é recolhida e os controles superiores são condensados. Os filtros ficam acessíveis pelo botão Filtros. A visualização inicial é Dia: uma linha por sala, com Manhã e Tarde lado a lado e coluna Extra quando houver reserva nesse turno. Semana preserva os sete dias com domingo na última coluna. As setas de data avançam um dia ou uma semana conforme o modo.
+
+Ajustar à tela calcula a altura das linhas no computador a partir do espaço disponível, com tamanho mínimo legível. O zoom de 75% a 200% altera somente a grade e permite rolagem quando necessário. Tela cheia usa o recurso do navegador; Escape retorna à janela normal. Cabeçalhos e nomes das salas permanecem visíveis durante a rolagem. O modo diário permite exibir dez salas com os dois turnos em dez linhas. Em telas baixas, muitas salas ou zoom alto, a rolagem preserva a legibilidade.
+
+Seleção, teclado, copiar, recortar, colar, arrastar e DEL seguem as linhas e colunas do modo visível. Ao trocar entre Dia e Semana, copie a seleção novamente antes de colar. A exportação XLSX inclui somente o dia ou a semana exibidos, com todos os agendamentos dos turnos. Os controles visuais não fazem consultas adicionais ao servidor.
 
 A prévia preserva a duração e permite ajustar sala, data e horário de início. Células vazias mantêm o espaçamento da seleção, e reservas que atravessam turnos são aplicadas uma única vez. Cada operação admite até 100 reservas. Domingos, destinos passados, alterações concorrentes e sobreposições dentro da seleção impedem a aplicação completa. Reservas existentes no destino só são substituídas após confirmação explícita.
 

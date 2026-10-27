@@ -1,3 +1,4 @@
+import { withUnitRequest } from "@/lib/unit-request";
 import { NextResponse } from "next/server";
 import { getSessionUserId } from "@/lib/auth";
 import { ensureDatabase, getUserWithRole, permissionsOf, sql } from "@/lib/db";
@@ -6,7 +7,7 @@ export const dynamic = "force-dynamic";
 
 type RankingRow = { user_id: string; user_name: string; count: number };
 
-export async function GET() {
+async function handleGET() {
   await ensureDatabase();
   const sessionUserId = await getSessionUserId();
   if (!sessionUserId)
@@ -80,3 +81,5 @@ export async function GET() {
     ],
   });
 }
+
+export const GET = withUnitRequest(handleGET, false);

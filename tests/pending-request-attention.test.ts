@@ -10,7 +10,7 @@ function fixture(): AppState {
   const request = (n: number, roomId: string | null) => ({ id:id(n),roomId,roomName:roomId ? "Sala" : null,
     requesterName:"Instrutor",status:"pending",requestedDate:"2026-10-10",startTime:"14:20",endTime:"20:00",
     urgent:false,reason:"Dado que não deve ser persistido",requesterId:id(9) } as BookingRequest);
-  return { currentUser:{id:id(1),name:"Ana",permissions:["booking.review"],isGod:false},
+  return { activeUnit:{id:id(100),code:"uruguai",name:"URUGUAI"},currentUser:{id:id(1),name:"Ana",permissions:["booking.review"],isGod:false},
     now:"2026-10-10T20:00:00Z",rooms:[room(10,true),room(11,false),room(12,true)],
     requests:[request(20,id(10)),request(21,id(11)),request(22,null),request(23,id(12))] } as AppState;
 }
@@ -46,8 +46,19 @@ test("resumo offline preserva só dados necessários e não expira decisões sem
 test("cache inválido, vazio, excessivo ou com pedidos duplicados não restaura o resumo", () => {
   const snapshot=pendingDutySnapshot(fixture())!;
   for (const raw of [null,"{", "x".repeat(2_000_001),JSON.stringify({...snapshot,userId:"falso"}),
-    JSON.stringify({...snapshot,requests:[]}),JSON.stringify({...snapshot,version:2}),
+    JSON.stringify({...snapshot,requests:[]}),JSON.stringify({...snapshot,version:1}),
     JSON.stringify({...snapshot,requests:[snapshot.requests[0],snapshot.requests[0]]}),
     JSON.stringify({...snapshot,requests:[{...snapshot.requests[0],startTime:"25:00"}]}),
   ]) assert.equal(parsePendingDutyCache(raw),null);
+});
+
+test("pendências em outras unidades continuam visíveis sem atribuir responsabilidade implícita ao GOD",()=>{
+ const state=fixture();
+ state.currentUser!.isGod=true;
+ state.rooms.forEach(room=>{room.approvalResponsibles=[];});
+ state.additionalDutyRequests=[{...state.requests[0],id:id(50),unitId:id(101),unitCode:"cabula",unitName:"CABULA"}];
+ const snapshot=pendingDutySnapshot(state)!;
+ assert.equal(snapshot.requests.length,1);assert.equal(snapshot.requests[0].unitName,"CABULA");
+ assert.equal(snapshot.unitCode,"uruguai");
+ assert.equal(parsePendingDutyCache(JSON.stringify(snapshot))?.requests[0].unitId,id(101));
 });

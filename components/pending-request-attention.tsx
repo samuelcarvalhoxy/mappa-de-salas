@@ -10,7 +10,7 @@ export function PendingRequestBanner({ snapshot, offline, onOpen }: {
   return <aside className="pending-request-banner" aria-label="Solicitações sob sua responsabilidade" role="status">
     <BellRing size={20} aria-hidden="true" />
     <div><strong>{snapshot.requests.length} solicitação(ões) aguardando sua resposta</strong>
-      <p>{offline ? "Sem conexão. Pendências da última sincronização; as decisões serão conferidas ao reconectar." : "Você é responsável por aprovar ou rejeitar esses pedidos. O destaque permanece até serem respondidos."}</p>
+      <p>{offline ? "Sem conexão. Pendências da última sincronização; as decisões serão conferidas ao reconectar." : `Você é responsável por esses pedidos. Unidades: ${[...new Set(snapshot.requests.map(request=>request.unitName))].join(", ")}.`}</p>
     </div>
     <button className="btn" type="button" onClick={onOpen}>Ver solicitações</button>
   </aside>;
@@ -42,7 +42,7 @@ export function OfflinePendingRequests({ snapshot, rootRef, buttonRef, rippleRef
       <PendingRequestBanner snapshot={snapshot} offline onOpen={() => document.getElementById("offline-duty-list")?.scrollIntoView()} />
       <p className="field-help">Última confirmação: {new Date(snapshot.confirmedAt).toLocaleString("pt-BR",{timeZone:"America/Bahia"})}. Novos pedidos e decisões exigem conexão. Para analisar, reconecte e valide sua sessão.</p>
       <div id="offline-duty-list" className="request-list">{snapshot.requests.map((request) => <article className="request-card" key={request.id}>
-        <div className="request-main"><strong>{request.requesterName}</strong><p>{request.roomName || "Qualquer sala disponível"}</p>
+        <div className="request-main"><strong>{request.requesterName}</strong><p><strong>{request.unitName}</strong> · {request.roomName || "Qualquer sala disponível"}</p>
           <p>{request.requestedDate.split("-").reverse().join("/")}, das {request.startTime} às {request.endTime}{request.endTime <= request.startTime ? " do dia seguinte" : ""}</p>
           <span className="mini-status pending">Aguardava resposta na última sincronização</span>
         </div>

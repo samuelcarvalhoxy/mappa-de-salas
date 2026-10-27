@@ -9,6 +9,8 @@ const uid = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12,"0")
 const god=uid(1), delegate=uid(2), reviewer=uid(3), other=uid(4), room=uid(10);
 const db = new PGlite();
 before(async () => {
+  await db.exec(`CREATE FUNCTION mappa_effective_role(target uuid,fallback anyelement) RETURNS anyelement LANGUAGE sql AS 'SELECT $2';
+    CREATE FUNCTION mappa_user_in_unit(target uuid,include_inactive boolean DEFAULT false) RETURNS boolean LANGUAGE sql AS 'SELECT true';`);
   await db.exec(`CREATE TABLE roles(id int PRIMARY KEY,name text,permissions jsonb);
     CREATE TABLE users(id uuid PRIMARY KEY,name text,username text,role_id int REFERENCES roles(id),active boolean DEFAULT true,deleted_at timestamptz,is_god boolean DEFAULT false);
     CREATE TABLE rooms(id uuid PRIMARY KEY,name text,active boolean DEFAULT true,kind text DEFAULT 'physical');

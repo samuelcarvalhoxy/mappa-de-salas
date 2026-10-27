@@ -1,7 +1,7 @@
 import { sql } from "./db";
 import { pushToUsers } from "./push";
 import { EXPIRE_BOOKING_REQUESTS_SQL } from "./request-expiration-sql";
-import { after } from "next/server";
+import { afterInUnit as after } from "@/lib/after-in-unit";
 
 export async function expireBookingRequests() {
   const rows = await sql().query(EXPIRE_BOOKING_REQUESTS_SQL);

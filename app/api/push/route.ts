@@ -1,9 +1,10 @@
+import { withUnitRequest } from "@/lib/unit-request";
 import { NextRequest, NextResponse } from "next/server";
 import { getSessionUserId } from "@/lib/auth";
 import { ensureDatabase, getUserWithRole, sql } from "@/lib/db";
 import { pushToUsers } from "@/lib/push";
 
-export async function POST(request: NextRequest) {
+async function handlePOST(request: NextRequest) {
   await ensureDatabase();
   const userId = await getSessionUserId();
   if (!userId)
@@ -65,3 +66,5 @@ export async function POST(request: NextRequest) {
   );
   return NextResponse.json({ ok: true });
 }
+
+export const POST = withUnitRequest(handlePOST, false);

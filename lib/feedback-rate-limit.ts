@@ -1,6 +1,6 @@
 import { createHmac } from "node:crypto";
 import type { NextRequest } from "next/server";
-import { sql } from "./db";
+import { rawSql as sql } from "./db";
 
 type Limit = {
   name: string;

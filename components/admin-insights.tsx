@@ -1,5 +1,7 @@
 "use client";
 
+import { unitHeaders, unitExportName } from "@/lib/unit-client";
+
 import { useEffect, useMemo, useState } from "react";
 import {
   BarChart3,
@@ -77,7 +79,7 @@ export async function downloadWorkbook(
   );
   const link = document.createElement("a");
   link.href = url;
-  link.download = filename;
+  link.download = unitExportName(filename);
   link.click();
   window.setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
@@ -458,7 +460,7 @@ export function RankingsPanel() {
   const [error, setError] = useState("");
   useEffect(() => {
     let active = true;
-    fetch("/api/reports", { cache: "no-store" })
+    fetch("/api/reports", { cache: "no-store", headers: unitHeaders() })
       .then(async (response) => {
         const payload = await response.json();
         if (!response.ok) throw new Error(payload.error || "Falha ao carregar rankings.");

@@ -1,5 +1,7 @@
 "use client";
 
+import { unitHeaders } from "@/lib/unit-client";
+
 import { useEffect, useId, useRef, useState } from "react";
 import type { AppState, RequestDecisionStats } from "@/lib/types";
 
@@ -79,7 +81,7 @@ export function RequestOutcomesPanel({ refreshedAt }: { refreshedAt: string }) {
   const [error, setError] = useState("");
   useEffect(() => {
     let cancelled = false;
-    void fetch("/api/stats?mode=requests", { cache: "no-store" }).then(async (response) => {
+    void fetch("/api/stats?mode=requests", { cache: "no-store", headers: unitHeaders() }).then(async (response) => {
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || "Não foi possível carregar as decisões.");
       if (!cancelled) { setData(result.requestOutcomes); setError(""); }

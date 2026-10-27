@@ -1,11 +1,13 @@
 "use client";
 
+import { unitHeaders } from "@/lib/unit-client";
+
 import { useCallback, useEffect, useRef, useState } from "react";
 
 async function postApi(path: string, body: Record<string, unknown>) {
   const response = await fetch(path, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...unitHeaders() },
     body: JSON.stringify(body),
   });
   const data = await response.json().catch(() => ({}));

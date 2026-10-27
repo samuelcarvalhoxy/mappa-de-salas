@@ -1,3 +1,5 @@
+import { handleUnitUserAction } from "@/lib/action-handlers/unit-users";
+import { withUnitRequest } from "@/lib/unit-request";
 import bcrypt from "bcryptjs";
 import { NextRequest, NextResponse } from "next/server";
 import { getSessionUserId } from "@/lib/auth";
@@ -142,7 +144,7 @@ async function requestResponseEstimate(db: ReturnType<typeof sql>) {
   });
 }
 
-export async function POST(request: NextRequest) {
+async function handlePOST(request: NextRequest) {
   await ensureDatabase().catch(() => null);
   const userId = await getSessionUserId();
   if (!userId) return fail("Faça login novamente.", 401);
@@ -161,6 +163,21 @@ export async function POST(request: NextRequest) {
     );
 
   try {
+    const unitUserResponse = await handleUnitUserAction(action,body,actor,permissions);
+    if (unitUserResponse) return unitUserResponse;
+    if (action.startsWith("user.") && action !== "user.password.change" && body.id) {
+      const target = await db.query(`SELECT mappa_user_in_unit($1::uuid,true) allowed`,[String(body.id)]);
+      if (!target[0]?.allowed) return fail("Usuário não pertence a esta unidade.",403);
+      if (!actor.is_god && action === "user.security.reset") {
+        const memberships = await db.query(`SELECT count(*)::int count FROM unit_memberships WHERE user_id=$1 AND active`,[String(body.id)]);
+        if (Number(memberships[0]?.count)>1) return fail("Somente um GOD pode redefinir uma conta com várias unidades.",403);
+      }
+    }
+    if (action === "unit.handover_review") {
+      if (!actor.is_god && !requirePermission("user.manage") && !requirePermission("booking.review")) return fail("Sem permissão para revisar pendências.",403);
+      await db.query(`UPDATE unit_handovers SET reviewed_by=$1,reviewed_at=now() WHERE id=$2`,[actor.id,String(body.id)]);
+      return NextResponse.json({ok:true});
+    }
     if (action.startsWith("request.")) await expireBookingRequests();
     if (action === "request.acknowledge_expiry") {
       const id = String(body.id || "");
@@ -1022,138 +1039,6 @@ export async function POST(request: NextRequest) {
         [await bcrypt.hash(newPassword, 12), actor.id],
       );
       await audit("Senha própria alterada");
-    } else if (action === "user.save") {
-      if (!requirePermission("user.manage"))
-        return fail("Sem permissão para administrar usuários.", 403);
-      const id = body.id ? String(body.id) : null;
-      const name = String(body.name || "").trim();
-      const username = String(body.username || "")
-        .trim()
-        .toLowerCase();
-      const password = String(body.password || "");
-      const requestedRoleId = String(body.roleId || "");
-      if (name.length < 2 || username.length < 2 || !requestedRoleId)
-        return fail("Preencha nome, usuário e perfil.");
-      const existing = id
-        ? await db.query(
-            `SELECT u.id,u.username,u.role_id,u.is_god,u.is_owner_god,r.permissions role_permissions
-             FROM users u JOIN roles r ON r.id=u.role_id
-             WHERE u.id=$1 AND u.deleted_at IS NULL`,
-            [id],
-          )
-        : [];
-      if (id && !existing.length) return fail("Usuário não encontrado.", 404);
-      if (existing[0]?.is_god && !actor.is_god)
-        return fail("Somente um God pode alterar esse acesso.", 403);
-      if (
-        existing[0]?.is_owner_god &&
-        String(existing[0].id) !== String(actor.id)
-      )
-        return fail(
-          "O God proprietário é protegido e não pode ser alterado por outro usuário.",
-          403,
-        );
-      const requestedRole = await db.query(
-        `SELECT id,name,permissions FROM roles WHERE id=$1 LIMIT 1`,
-        [requestedRoleId],
-      );
-      if (!requestedRole.length)
-        return fail("Perfil de acesso não encontrado.", 404);
-      if (requestedRole[0].name === "God" && !actor.is_god)
-        return fail("Somente um God pode criar ou promover outro God.", 403);
-      const roleId = existing[0]?.is_owner_god
-        ? existing[0].role_id
-        : requestedRoleId;
-      const currentRolePermissions = validPermissions(
-        existing[0]?.role_permissions,
-      );
-      const nextRolePermissions = existing[0]?.is_owner_god
-        ? currentRolePermissions
-        : validPermissions(requestedRole[0].permissions);
-      if (
-        !canManagePermissionChanges({
-          actorPermissions: permissions,
-          actorIsGod: Boolean(actor.is_god),
-          currentPermissions: currentRolePermissions,
-          nextPermissions: nextRolePermissions,
-        })
-      )
-        return fail(
-          "Você só pode atribuir ou remover permissões que já possui. Central de notificações, relatório de acessos e nomeação de responsáveis são delegados somente por um God.",
-          403,
-        );
-      const willBeGod = existing[0]?.is_owner_god
-        ? true
-        : requestedRole[0].name === "God";
-      const rawAnswers = Array.isArray(body.securityAnswers)
-        ? body.securityAnswers.filter(
-            (a: { question?: string; answer?: string }) =>
-              a.question && a.answer,
-          )
-        : [];
-      if (id && rawAnswers.length && !requirePermission("security.reset"))
-        return fail("Seu perfil não pode alterar respostas de segurança.", 403);
-      if (rawAnswers.length > 0 && rawAnswers.length < 3)
-        return fail(
-          "Preencha as três respostas de segurança ou deixe todas vazias.",
-        );
-      if (
-        rawAnswers.some(
-          (item: { question: string; answer: string }, index: number) =>
-            item.question !== SECURITY_QUESTIONS[index] ||
-            !isAllowedSecurityAnswer(item.question, item.answer),
-        )
-      )
-        return fail("Selecione opções válidas para as respostas de segurança.");
-      const securityAnswers = await Promise.all(
-        rawAnswers
-          .slice(0, 3)
-          .map(async (item: { question: string; answer: string }) => ({
-            question: item.question,
-            hash: await bcrypt.hash(
-              item.answer.trim().toLocaleLowerCase("pt-BR"),
-              12,
-            ),
-          })),
-      );
-      if (!id) {
-        if (password.length < 8)
-          return fail("A senha inicial precisa ter pelo menos 8 caracteres.");
-        const hash = await bcrypt.hash(password, 12);
-        await db.query(
-          `INSERT INTO users(name,username,password_hash,role_id,security_answers,is_god) VALUES ($1,$2,$3,$4,$5::jsonb,$6)`,
-          [
-            name,
-            username,
-            hash,
-            roleId,
-            JSON.stringify(securityAnswers),
-            willBeGod,
-          ],
-        );
-      } else {
-        await db.query(
-          `UPDATE users SET name=$1,username=$2,role_id=$3,active=CASE WHEN is_owner_god THEN true ELSE $4 END,security_answers=CASE WHEN $5::jsonb='[]'::jsonb THEN security_answers ELSE $5::jsonb END,is_god=CASE WHEN is_owner_god THEN true ELSE $6 END,updated_at=now() WHERE id=$7 AND deleted_at IS NULL`,
-          [
-            name,
-            username,
-            roleId,
-            body.active !== false,
-            JSON.stringify(securityAnswers),
-            willBeGod,
-            id,
-          ],
-        );
-        if (password) {
-          if (password.length < 8)
-            return fail("A senha precisa ter pelo menos 8 caracteres.");
-          await db.query(`UPDATE users SET password_hash=$1 WHERE id=$2`, [
-            await bcrypt.hash(password, 12),
-            id,
-          ]);
-        }
-      }
-      await audit(`Usuário ${username} salvo`);
     } else if (action === "user.security.reset") {
       if (!requirePermission("security.reset"))
         return fail("Sem permissão para resetar respostas de segurança.", 403);
@@ -1175,48 +1060,6 @@ export async function POST(request: NextRequest) {
         [targetId],
       );
       await audit(`Respostas de segurança de ${target[0].username} resetadas`);
-    } else if (action === "user.delete") {
-      if (!requirePermission("user.delete"))
-        return fail("Sem permissão para excluir usuários.", 403);
-      const targetId = String(body.id || "");
-      const target = await db.query(
-        `SELECT username,is_god,is_owner_god FROM users WHERE id=$1 AND deleted_at IS NULL LIMIT 1`,
-        [targetId],
-      );
-      if (!target.length) return fail("Usuário não encontrado.", 404);
-      if (target[0].is_owner_god)
-        return fail("O God proprietário nunca pode ser excluído.", 403);
-      if (target[0].is_god && !actor.is_god)
-        return fail("Somente um God pode excluir outro God.", 403);
-      if (targetId === actor.id)
-        return fail("Você não pode excluir o próprio acesso.", 403);
-      const scheduled = await db.query(
-        `SELECT count(*)::int count FROM reservations WHERE user_id=$1 AND status='reserved' AND ends_at>now()`,
-        [targetId],
-      );
-      if (Number(scheduled[0]?.count) > 0)
-        return fail(
-          "Este usuário possui reserva atual ou futura. Cancele ou transfira essas agendas antes de excluir.",
-          409,
-        );
-      const pendingRequests = await db.query(
-        `SELECT count(*)::int count FROM booking_requests WHERE requester_id=$1 AND status='pending'`,
-        [targetId],
-      );
-      if (Number(pendingRequests[0]?.count) > 0)
-        return fail(
-          "Este usuário possui solicitações pendentes. Analise ou cancele essas solicitações antes de excluir.",
-          409,
-        );
-      const baseRole = await db.query(
-        `SELECT id FROM roles WHERE name='Usuário' LIMIT 1`,
-      );
-      const replacementRoleId = baseRole[0]?.id || actor.role_id;
-      await db.query(
-        `UPDATE users SET active=false,deleted_at=now(),role_id=$1,security_answers='[]'::jsonb,username=username||'__excluido__'||substr(id::text,1,8),updated_at=now() WHERE id=$2`,
-        [replacementRoleId, targetId],
-      );
-      await audit(`Usuário ${target[0].username} excluído`);
     } else if (action === "role.save") {
       if (!actor.is_god && !requirePermission("role.manage"))
         return fail("Sem permissão para criar perfis.", 403);
@@ -1279,7 +1122,7 @@ export async function POST(request: NextRequest) {
       if (target[0].name === "God")
         return fail("O perfil God é protegido.", 403);
       const assigned = await db.query(
-        `SELECT count(*)::int count FROM users WHERE role_id=$1 AND deleted_at IS NULL`,
+        `SELECT count(*)::int count FROM unit_memberships WHERE role_id=$1 AND unit_id=mappa_current_unit()`,
         [id],
       );
       if (Number(assigned[0]?.count) > 0)
@@ -1297,6 +1140,9 @@ export async function POST(request: NextRequest) {
       error instanceof Error && error.message.includes("unique")
         ? "Já existe um cadastro com esses dados."
         : "Não foi possível concluir a operação.";
-    return fail(message, 500);
+    if (error instanceof Error && /USER_CHANGED|PERMISSIONS_CHANGED|ACTOR_ACCESS_CHANGED/.test(error.message)) return fail("O acesso ou cadastro mudou. Atualize a tela antes de continuar.",409);
+    return fail(message, error instanceof Error && error.message.includes("unique") ? 409 : 500);
   }
 }
+
+export const POST = withUnitRequest(handlePOST, false);

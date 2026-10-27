@@ -1,3 +1,4 @@
+import { withUnitRequest } from "@/lib/unit-request";
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { getSessionUserId } from "@/lib/auth";
@@ -24,7 +25,7 @@ const querySchema = z
     },
   );
 
-export async function GET(request: NextRequest) {
+async function handleGET(request: NextRequest) {
   await ensureDatabase();
   const sessionUserId = await getSessionUserId();
   if (!sessionUserId)
@@ -85,3 +86,5 @@ export async function GET(request: NextRequest) {
     })),
   });
 }
+
+export const GET = withUnitRequest(handleGET, false);

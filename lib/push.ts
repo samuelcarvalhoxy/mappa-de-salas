@@ -1,3 +1,4 @@
+import { unitContext } from "./unit-context";
 import webpush from "web-push";
 import { sql } from "./db";
 import { getPushConfiguration } from "./settings";
@@ -35,7 +36,16 @@ async function configured() {
   return true;
 }
 
+function unitPayload(payload: PushPayload): PushPayload {
+  const unit=unitContext.getStore();
+  if (!unit) return payload;
+  const url=new URL(payload.url || "/","https://mappa.local");
+  if (!url.searchParams.has("unit")) url.searchParams.set("unit",unit.unitCode);
+  return {...payload,title:payload.title.startsWith("[") ? payload.title : `[${unit.unitName}] ${payload.title}`,url:url.pathname+url.search,
+    tag:payload.tag ? `${payload.tag}:${unit.unitCode}` : undefined};
+}
 export async function pushToUsers(userIds: string[], payload: PushPayload) {
+  payload=unitPayload(payload);
   try {
     if (!userIds.length) return emptyDelivery(true);
     if (!(await configured())) {
@@ -49,7 +59,7 @@ export async function pushToUsers(userIds: string[], payload: PushPayload) {
       return emptyDelivery(false);
     }
     const subscriptions = await sql().query(
-      `SELECT id,endpoint,p256dh,auth FROM push_subscriptions WHERE user_id=ANY($1::uuid[])`,
+      `SELECT id,endpoint,p256dh,auth FROM push_subscriptions WHERE user_id=ANY($1::uuid[]) AND mappa_user_in_unit(user_id)`,
       [userIds],
     );
     if (!subscriptions.length) {
@@ -123,12 +133,13 @@ export async function pushToUsers(userIds: string[], payload: PushPayload) {
 }
 
 export async function notifyUsers(userIds: string[], payload: PushPayload) {
+  payload=unitPayload(payload);
   const uniqueUserIds = Array.from(new Set(userIds.filter(Boolean)));
   if (!uniqueUserIds.length) return emptyDelivery(true);
   await sql().query(
     `INSERT INTO notifications(user_id,title,body,url)
      SELECT u.id,$2,$3,$4 FROM users u
-     WHERE u.id=ANY($1::uuid[]) AND u.active=true AND u.deleted_at IS NULL`,
+     WHERE u.id=ANY($1::uuid[]) AND u.active=true AND u.deleted_at IS NULL AND mappa_user_in_unit(u.id)`,
     [uniqueUserIds, payload.title, payload.body, payload.url || "/"],
   );
   return pushToUsers(uniqueUserIds, payload);
@@ -139,8 +150,8 @@ export async function notifyPermission(
   payload: PushPayload,
 ) {
   const users = await sql().query(
-    `SELECT DISTINCT u.id FROM users u JOIN roles r ON r.id=u.role_id
-     WHERE u.active=true AND u.deleted_at IS NULL AND (u.is_god=true OR r.permissions ? $1)`,
+    `SELECT DISTINCT u.id FROM users u JOIN roles r ON r.id=mappa_effective_role(u.id,u.role_id)
+     WHERE u.active=true AND u.deleted_at IS NULL AND mappa_user_in_unit(u.id) AND (u.is_god=true OR r.permissions ? $1)`,
     [permission],
   );
   return notifyUsers(
@@ -170,8 +181,8 @@ export async function pushToPermission(
 ) {
   try {
     const users = await sql().query(
-      `SELECT DISTINCT u.id FROM users u JOIN roles r ON r.id=u.role_id
-      WHERE u.active=true AND u.deleted_at IS NULL AND (u.is_god=true OR r.permissions ? $1)`,
+      `SELECT DISTINCT u.id FROM users u JOIN roles r ON r.id=mappa_effective_role(u.id,u.role_id)
+      WHERE u.active=true AND u.deleted_at IS NULL AND mappa_user_in_unit(u.id) AND (u.is_god=true OR r.permissions ? $1)`,
       [permission],
     );
     await pushToUsers(

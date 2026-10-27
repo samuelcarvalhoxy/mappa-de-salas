@@ -82,7 +82,7 @@ export async function handleNotificationAction({
     let audienceLabel = "";
     if (audienceType === "all") {
       recipients = await db.query(
-        `SELECT id,name FROM users WHERE active=true AND deleted_at IS NULL ORDER BY name`,
+        `SELECT id,name FROM users WHERE mappa_user_in_unit(id) AND active=true AND deleted_at IS NULL ORDER BY name`,
       );
       audienceLabel = "Todos os usuários";
     } else if (audienceType === "role" && audienceId) {
@@ -91,13 +91,13 @@ export async function handleNotificationAction({
       ]);
       if (!role.length) return fail("Perfil não encontrado.", 404);
       recipients = await db.query(
-        `SELECT id,name FROM users WHERE role_id=$1 AND active=true AND deleted_at IS NULL ORDER BY name`,
+        `SELECT id,name FROM users WHERE mappa_effective_role(id,role_id)=$1 AND mappa_user_in_unit(id) AND active=true AND deleted_at IS NULL ORDER BY name`,
         [audienceId],
       );
       audienceLabel = `Perfil ${role[0].name}`;
     } else if (audienceType === "user" && audienceId) {
       recipients = await db.query(
-        `SELECT id,name FROM users WHERE id=$1 AND active=true AND deleted_at IS NULL`,
+        `SELECT id,name FROM users WHERE id=$1 AND mappa_user_in_unit(id) AND active=true AND deleted_at IS NULL`,
         [audienceId],
       );
       if (!recipients.length) return fail("Usuário não encontrado.", 404);
@@ -134,7 +134,7 @@ export async function handleNotificationAction({
       return fail("Somente um usuário God pode alterar lembretes recorrentes.", 403);
     const targetId = String(body.userId || "");
     const target = await db.query(
-      `SELECT u.id,u.is_god,r.permissions FROM users u JOIN roles r ON r.id=u.role_id
+      `SELECT u.id,u.is_god,r.permissions FROM users u JOIN roles r ON r.id=mappa_effective_role(u.id,u.role_id)
        WHERE u.id=$1 AND u.active=true AND u.deleted_at IS NULL LIMIT 1`,
       [targetId],
     );

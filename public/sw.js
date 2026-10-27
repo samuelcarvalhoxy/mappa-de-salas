@@ -1,4 +1,4 @@
-const CACHE = "mappa-v4";
+const CACHE = "mappa-v5";
 const SHELL = ["/", "/manifest.webmanifest", "/icon.svg"];
 async function cacheOfflineShell() {
   const cache = await caches.open(CACHE);
@@ -62,6 +62,7 @@ self.addEventListener("fetch", (event) => {
 });
 self.addEventListener("push", (event) => {
   const data = event.data?.json?.() || {};
+  const eventTag=(data.tag || "").split(":")[0];
   event.waitUntil(
     Promise.all([
       self.registration.showNotification(data.title || "Mappa de Salas", {
@@ -71,12 +72,12 @@ self.addEventListener("push", (event) => {
         tag: data.tag || "mappa-update",
         data: { url: data.url || "/" },
       }),
-      (data.tag === "request-auto-rejection" || data.tag === "request-auto-result")
+      (eventTag === "request-auto-rejection" || eventTag === "request-auto-result")
         ? self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((windows) => {
             windows.forEach((client) => client.postMessage({ type: "request-auto-rejection" }));
           })
         : Promise.resolve(),
-      (data.tag === "booking-request" || data.tag?.startsWith("urgent-request-") || data.tag === "pending-request-reminder")
+      (eventTag === "booking-request" || data.tag?.startsWith("urgent-request-") || eventTag === "pending-request-reminder")
         ? self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((windows) => {
             windows.forEach((client) => client.postMessage({ type: "booking-requests-changed" }));
           })

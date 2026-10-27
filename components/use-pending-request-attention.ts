@@ -11,6 +11,9 @@ export function usePendingRequestAttention({ snapshot, rootRef, buttonRef, rippl
 }) {
   const count = snapshot?.requests.length || 0;
   const userId = snapshot?.userId || "";
+  const unitKey=snapshot?.requests.map(request=>request.unitCode).sort().join(",") || "";
+  const unitNames=[...new Set(snapshot?.requests.map(request=>request.unitName) || [])].join(", ");
+  const firstUnit=snapshot?.requests[0]?.unitCode || "";
   const requestKey = snapshot?.requests.map((request) => request.id).sort().join(",") || "";
   const [reminderVisible, setReminderVisible] = useState(false);
 
@@ -72,15 +75,15 @@ export function usePendingRequestAttention({ snapshot, rootRef, buttonRef, rippl
       }
       if (notifyBrowser && "Notification" in window && Notification.permission === "granted" && "serviceWorker" in navigator) {
         // Coordinate browser reminders across tabs. This does not contact the server.
-        const key = `mappa-duty-reminder-${userId}`;
+        const key = `mappa-duty-reminder-${userId}-${unitKey}`;
         try {
           const previous = Number(localStorage.getItem(key)) || 0;
           if (Date.now() - previous < DUTY_REMINDER_INTERVAL_MS - 5000) return;
           localStorage.setItem(key,String(Date.now()));
         } catch { /* The in-app reminder still works without storage. */ }
         void navigator.serviceWorker.getRegistration().then((registration) => registration?.showNotification("Solicitações aguardando sua resposta", {
-          body: `${count} pedido(s) sob sua responsabilidade ainda aguardam análise.`, icon: "/icon.svg",
-          tag: `responsibility-reminder-${userId}`, data: { url: "/?tab=requests" },
+          body: `${count} pedido(s) aguardam análise. Unidades: ${unitNames}.`, icon: "/icon.svg",
+          tag: `responsibility-reminder-${userId}`, data: { url: `/?tab=requests&unit=${firstUnit}` },
         })).catch(() => { /* Browser denial never suppresses in-app reminders. */ });
       }
     };
@@ -94,6 +97,6 @@ export function usePendingRequestAttention({ snapshot, rootRef, buttonRef, rippl
       else if (originalIcon === null) favicon.removeAttribute("href");
       else favicon.setAttribute("href",originalIcon);
     };
-  }, [count, requestKey, userId, rootRef]);
+  }, [count, requestKey, userId, rootRef,unitKey,unitNames,firstUnit]);
   return count > 0 && reminderVisible;
 }

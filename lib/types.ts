@@ -31,6 +31,7 @@ export type CurrentUser = {
   isGod: boolean;
   isOwnerGod: boolean;
   permissions: Permission[];
+  primaryUnitId?: string;
 };
 
 export type Room = {
@@ -162,7 +163,11 @@ export type BookingRequest = {
   urgentAcknowledgedAt: string | null;
 };
 
+export type Unit = { id: string; code: string; name: string };
+export type UnitHandover = { id: string; summary: string; createdAt: string };
+
 export type Role = {
+  unitId?: string;
   id: string;
   name: string;
   color: string;
@@ -170,6 +175,9 @@ export type Role = {
   system: boolean;
 };
 export type ManagedUser = {
+  globalActive?: boolean;
+  primaryUnitId?: string;
+  updatedAt?: string;
   id: string;
   name: string;
   username: string;
@@ -186,6 +194,12 @@ export type ManagedUser = {
 };
 
 export type AppState = {
+  activeUnit?: Unit;
+  units?: Unit[];
+  unitRoles?: Role[];
+  directoryUsers?: ManagedUser[];
+  handovers?: UnitHandover[];
+  additionalDutyRequests?: (BookingRequest & {unitId:string;unitCode:string;unitName:string})[];
   configured: boolean;
   now: string;
   currentUser: CurrentUser | null;

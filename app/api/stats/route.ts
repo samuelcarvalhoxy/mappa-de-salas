@@ -1,3 +1,4 @@
+import { withUnitRequest } from "@/lib/unit-request";
 import { NextRequest, NextResponse } from "next/server";
 import { getSessionUserId } from "@/lib/auth";
 import { ensureDatabase, getUserWithRole, permissionsOf, sql } from "@/lib/db";
@@ -11,7 +12,7 @@ const querySchema = z.object({
   id: z.string().uuid().optional(),
 });
 
-export async function GET(request: NextRequest) {
+async function handleGET(request: NextRequest) {
   await ensureDatabase();
   const sessionUserId = await getSessionUserId();
   if (!sessionUserId)
@@ -53,7 +54,7 @@ export async function GET(request: NextRequest) {
   if (parsed.data.mode === "requests") return NextResponse.json({ requestOutcomes });
   if (parsed.data.mode === "user") {
     const target = await db.query(
-      `SELECT name FROM users WHERE id=$1 AND deleted_at IS NULL LIMIT 1`,
+      `SELECT name FROM users WHERE id=$1 AND deleted_at IS NULL AND (mappa_user_in_unit(id,true) OR EXISTS(SELECT 1 FROM reservations WHERE user_id=users.id)) LIMIT 1`,
       [parsed.data.id],
     );
     if (!target.length)
@@ -126,3 +127,5 @@ function summarize(rows: { useCount: number; totalMinutes: number }[]) {
     averageMinutes: useCount ? Math.round(totalMinutes / useCount) : 0,
   };
 }
+
+export const GET = withUnitRequest(handleGET, false);

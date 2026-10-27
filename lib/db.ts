@@ -1,5 +1,8 @@
-import { neon, NeonQueryFunction } from "@neondatabase/serverless";
+import { neon, type NeonQueryFunction } from "@neondatabase/serverless";
 import bcrypt from "bcryptjs";
+import { UNIT_MIGRATION_SQL, UNIT_SCHEMA_VERSION } from "./unit-schema";
+import { unitContext } from "./unit-context";
+import { scopedDatabase } from "./scoped-database";
 import type { Permission } from "./types";
 import { SECURITY_FIELDS } from "./security-options";
 import { REQUEST_EXPIRATION_SCHEMA } from "./request-expiration-sql";
@@ -14,7 +17,7 @@ export function hasDatabase() {
   return Boolean(process.env.DATABASE_URL);
 }
 
-export function sql() {
+export function rawSql() {
   if (!process.env.DATABASE_URL) throw new Error("DATABASE_NOT_CONFIGURED");
   if (!client) {
     const databaseUrl = new URL(process.env.DATABASE_URL);
@@ -25,10 +28,12 @@ export function sql() {
   return client;
 }
 
+export function sql() { return scopedDatabase(rawSql()); }
+
 export async function ensureDatabase() {
   if (!hasDatabase()) throw new Error("DATABASE_NOT_CONFIGURED");
   if (!ready) ready = initialize();
-  return ready;
+  try { await ready; } catch(error) { ready=null; throw error; }
 }
 
 async function initialize() {
@@ -38,7 +43,12 @@ async function initialize() {
       `CREATE SCHEMA IF NOT EXISTS ${PREVIEW_SCHEMA}`,
     );
   }
-  const db = sql();
+  const db = rawSql();
+  const settingsExist = await db.query("SELECT to_regclass('app_settings') IS NOT NULL present");
+  if (settingsExist[0]?.present) {
+    const installed = await db.query("SELECT value FROM app_settings WHERE key=$1",[UNIT_SCHEMA_VERSION]);
+    if (installed.length) return;
+  }
   await db.query(`CREATE TABLE IF NOT EXISTS roles (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(), name text UNIQUE NOT NULL, color text NOT NULL DEFAULT '#64748b',
     permissions jsonb NOT NULL DEFAULT '[]'::jsonb, system boolean NOT NULL DEFAULT false, created_at timestamptz NOT NULL DEFAULT now()
@@ -380,6 +390,7 @@ async function initialize() {
   if (process.env.VERCEL_ENV === "preview") {
     await ensurePreviewTestData(db);
   }
+  await db.query(UNIT_MIGRATION_SQL);
 }
 
 async function ensurePreviewTestData(db: NeonQueryFunction<false, false>) {
@@ -484,12 +495,19 @@ async function ensurePreviewTestData(db: NeonQueryFunction<false, false>) {
 
 export async function getUserWithRole(userId: string) {
   await ensureDatabase();
-  const rows = await sql().query(
-    `SELECT u.id,u.name,u.username,u.active,u.is_god,u.is_owner_god,u.password_hash,u.security_answers,
-    r.id role_id,r.name role_name,r.color role_color,r.permissions FROM users u JOIN roles r ON r.id=u.role_id WHERE u.id=$1 AND u.deleted_at IS NULL LIMIT 1`,
+  const rows = await rawSql().query(
+    `SELECT u.primary_unit_id,u.id,u.name,u.username,u.active,u.is_god,u.is_owner_god,u.password_hash,u.security_answers,
+    r.id role_id,r.name role_name,r.color role_color,r.permissions FROM users u JOIN roles r ON r.id=mappa_effective_role(u.id,u.role_id) WHERE u.id=$1 AND u.deleted_at IS NULL LIMIT 1`,
     [userId],
   );
-  return rows[0] || null;
+  const row = rows[0];
+  const scope = unitContext.getStore();
+  if (row && scope && !row.is_god) {
+    const memberships = await rawSql().query(`SELECT r.id role_id,r.name role_name,r.color role_color,r.permissions FROM unit_memberships m JOIN roles r ON r.id=m.role_id WHERE m.user_id=$1 AND m.unit_id=$2 AND m.active=true`,[userId,scope.unitId]);
+    if (!memberships.length) return null;
+    return {...row,...memberships[0]};
+  }
+  return row || null;
 }
 
 export function permissionsOf(row: Record<string, unknown>): Permission[] {

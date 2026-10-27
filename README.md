@@ -4,6 +4,10 @@ Aplicação web responsiva e instalável para gestão de salas, reservas, solici
 
 Produção: https://mappa-de-salas.vercel.app/
 
+## Unidades
+
+CABULA, SÃO BENTO e URUGUAI compartilham o aplicativo com isolamento de dados e perfis por unidade. GODs navegam entre unidades; outros usuários veem somente os vínculos ativos. Cadastro e transferência preservam identidade, reservas e histórico. Detalhes técnicos, migração e recuperação: [docs/UNITS.md](docs/UNITS.md).
+
 ## Recursos principais
 
 - Mapa em cartões ou planilha semanal, com sete dias e domingo na última coluna.

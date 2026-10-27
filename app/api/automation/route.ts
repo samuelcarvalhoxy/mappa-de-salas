@@ -1,3 +1,5 @@
+import { rawSql } from "@/lib/db";
+import { unitContext } from "@/lib/unit-context";
 import { NextRequest, NextResponse } from "next/server";
 import { ensureDatabase, sql } from "@/lib/db";
 import { notifyUsers } from "@/lib/push";
@@ -35,8 +37,8 @@ async function sendRequestReminders(hour: number) {
   if (!count) return { skipped: true, reason: "no_pending_requests", reviewers: 0 };
 
   const reviewers = await db.query(
-    `SELECT u.id FROM users u JOIN roles r ON r.id=u.role_id
-     WHERE u.active=true AND u.deleted_at IS NULL AND u.is_god=false
+    `SELECT u.id FROM users u JOIN roles r ON r.id=mappa_effective_role(u.id,u.role_id)
+     WHERE u.active=true AND u.deleted_at IS NULL AND mappa_user_in_unit(u.id) AND u.is_god=false
        AND u.request_reminders_enabled=true AND r.permissions ? 'booking.review'
        AND (u.last_request_reminder_at IS NULL OR u.last_request_reminder_at<=now()-interval '29 minutes')`,
   );
@@ -60,11 +62,12 @@ async function sendRequestReminders(hour: number) {
 async function runDailyRetention(date: string, hour: number) {
   if (hour !== 2) return { skipped: true, reason: "outside_retention_hour" };
   const db = sql();
+  const retentionKey=`retention_last_run:${unitContext.getStore()!.unitId}`;
   const lock = await db.query(
-    `INSERT INTO app_settings(key,value) VALUES ('retention_last_run',$1)
+    `INSERT INTO app_settings(key,value) VALUES ($2,$1)
      ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value,updated_at=now()
      WHERE app_settings.value<>EXCLUDED.value RETURNING value`,
-    [date],
+    [date,retentionKey],
   );
   if (!lock.length) return { skipped: true, reason: "already_ran_today" };
 
@@ -73,7 +76,7 @@ async function runDailyRetention(date: string, hour: number) {
      SELECT date_trunc('month',created_at)::date,coalesce(actor_id::text,'system'),action,count(*)::int
      FROM audit_log WHERE created_at<now()-interval '90 days'
      GROUP BY 1,2,3
-     ON CONFLICT(month,actor_key,action) DO UPDATE
+     ON CONFLICT(unit_id,month,actor_key,action) DO UPDATE
      SET event_count=retention_rollups.event_count+EXCLUDED.event_count`,
   );
   const deleted = await Promise.all([
@@ -100,13 +103,19 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: "Acesso negado." }, { status: 401 });
   await ensureDatabase();
   const { date, hour } = bahiaParts();
-  const expiration = await expireBookingRequests();
-  const [reminders, retention] = await Promise.all([
-    sendRequestReminders(hour),
-    runDailyRetention(date, hour),
-  ]);
-  console.info(
-    JSON.stringify({ event: "automation.completed", date, hour, expiration, reminders, retention }),
-  );
-  return NextResponse.json({ ok: true, date, hour, expiration, reminders, retention });
+  const units=await rawSql().query(`SELECT id,code,name FROM units WHERE active ORDER BY display_order`);
+  const gods=await rawSql().query(`SELECT id FROM users WHERE is_god AND active AND deleted_at IS NULL ORDER BY is_owner_god DESC LIMIT 1`);
+  if (!gods.length) return NextResponse.json({error:"Nenhum GOD ativo para executar a rotina."},{status:503});
+  const results=[];
+  for (const unit of units) {
+    const result=await unitContext.run({unitId:String(unit.id),unitCode:String(unit.code),unitName:String(unit.name),actorId:String(gods[0].id),isGod:true},async()=>{
+      const expiration=await expireBookingRequests();
+      const reminders=await sendRequestReminders(hour);
+      const retention=await runDailyRetention(`${date}:${unit.id}`,hour);
+      return {unit:unit.code,expiration,reminders,retention};
+    });
+    results.push(result);
+  }
+  console.info(JSON.stringify({event:"automation.completed",date,hour,units:results}));
+  return NextResponse.json({ok:true,date,hour,units:results});
 }

@@ -1,8 +1,10 @@
+import { unitContext } from "@/lib/unit-context";
+import { withUnitRequest } from "@/lib/unit-request";
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { getSessionUserId } from "@/lib/auth";
-import { ensureDatabase, getUserWithRole, sql } from "@/lib/db";
-import { notifyUsers } from "@/lib/push";
+import { ensureDatabase, getUserWithRole, sql, rawSql } from "@/lib/db";
+import { notifyUsers, pushToUsers } from "@/lib/push";
 import { checkFeedbackRateLimit } from "@/lib/feedback-rate-limit";
 
 const feedbackSchema = z.object({
@@ -21,7 +23,7 @@ const feedbackSchema = z.object({
   website: z.string().max(0).optional().default(""),
 });
 
-export async function POST(request: NextRequest) {
+async function handlePOST(request: NextRequest) {
   await ensureDatabase();
   const parsed = feedbackSchema.safeParse(
     await request.json().catch(() => ({})),
@@ -42,6 +44,7 @@ export async function POST(request: NextRequest) {
   const sessionUser = sessionUserId
     ? await getUserWithRole(sessionUserId)
     : null;
+  if (sessionUser && !sessionUser.active) return NextResponse.json({error:"Sessão inválida."},{status:401});
   const reporterName = sessionUser?.name || parsed.data.reporterName;
   if (!sessionUser && reporterName.length < 2)
     return NextResponse.json(
@@ -62,7 +65,7 @@ export async function POST(request: NextRequest) {
       },
     );
 
-  const db = sql();
+  const db = sessionUser ? sql() : rawSql();
   const duplicate = await db.query(
     `SELECT id FROM feedback_reports
      WHERE created_at>now()-interval '1 minute' AND title=$1
@@ -78,8 +81,8 @@ export async function POST(request: NextRequest) {
     );
 
   await db.query(
-    `INSERT INTO feedback_reports(type,category,title,description,reporter_id,reporter_name,reporter_email)
-     VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+    `INSERT INTO feedback_reports(unit_id,type,category,title,description,reporter_id,reporter_name,reporter_email)
+     VALUES ($8,$1,$2,$3,$4,$5,$6,$7)`,
     [
       parsed.data.type,
       parsed.data.category,
@@ -88,6 +91,7 @@ export async function POST(request: NextRequest) {
       sessionUser?.id || null,
       reporterName,
       parsed.data.reporterEmail,
+      sessionUser ? unitContext.getStore()?.unitId : null,
     ],
   );
   if (sessionUser?.id)
@@ -102,6 +106,11 @@ export async function POST(request: NextRequest) {
   const gods = await db.query(
     `SELECT id FROM users WHERE is_god=true AND active=true AND deleted_at IS NULL`,
   );
+  if (!sessionUser) {
+    await rawSql().query(`INSERT INTO notifications(user_id,title,body,url) SELECT id,'[SISTEMA] Novo relato público',$1,'/?unit=uruguai&tab=development' FROM users WHERE is_god AND active AND deleted_at IS NULL`,[`${reporterName}: ${parsed.data.title}`]);
+    await pushToUsers(gods.map(god=>String(god.id)),{title:"[SISTEMA] Novo relato público",body:parsed.data.title,url:"/?unit=uruguai&tab=development"});
+    return NextResponse.json({ok:true});
+  }
   await notifyUsers(
     gods.map((god) => String(god.id)),
     {
@@ -116,3 +125,5 @@ export async function POST(request: NextRequest) {
   );
   return NextResponse.json({ ok: true });
 }
+
+export const POST = withUnitRequest(handlePOST, true);

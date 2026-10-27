@@ -5,7 +5,7 @@ import {
   randomBytes,
 } from "node:crypto";
 import webpush from "web-push";
-import { sql } from "./db";
+import { rawSql as sql } from "./db";
 
 function key() {
   if (!process.env.AUTH_SECRET) throw new Error("AUTH_SECRET_NOT_CONFIGURED");

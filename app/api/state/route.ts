@@ -1,3 +1,7 @@
+import { accessibleUnits } from "@/lib/unit-request";
+import { unitContext } from "@/lib/unit-context";
+import { rawSql } from "@/lib/db";
+import { withUnitRequest } from "@/lib/unit-request";
 import { NextRequest, NextResponse } from "next/server";
 import { getSessionUserId } from "@/lib/auth";
 import {
@@ -12,10 +16,12 @@ import { expireBookingRequests } from "@/lib/request-expiration";
 import { ROOM_RESPONSIBLE_USERS_SQL, ROOM_REVIEWER_OPTIONS_SQL } from "@/lib/room-review-responsibilities";
 
 export const dynamic = "force-dynamic";
+export const maxDuration = 60;
 
-export async function GET(request: NextRequest) {
+async function handleGET(request: NextRequest) {
   const empty = {
     currentUser: null,
+    units: [], unitRoles: [], directoryUsers: [], handovers: [],
     rooms: [],
     reservations: [],
     issues: [],
@@ -56,6 +62,9 @@ export async function GET(request: NextRequest) {
   if (!user || !user.active)
     return NextResponse.json({ error: "Sessão inválida" }, { status: 401 });
   const permissions = permissionsOf(user);
+  const scope=unitContext.getStore()!;
+  const units=await accessibleUnits(String(user.id),Boolean(user.is_god));
+  const activeUnit={id:scope.unitId,code:scope.unitCode,name:scope.unitName};
   const db = sql();
   await expireBookingRequests();
   const syncOnly = request.nextUrl.searchParams.get("mode") === "sync";
@@ -126,7 +135,7 @@ export async function GET(request: NextRequest) {
       permissions.includes("access.report") ||
       permissions.includes("audit.view"))
         ? db.query(
-            `SELECT id,name,color,permissions,system FROM roles ORDER BY system DESC,name`,
+            `SELECT id,name,color,permissions,system,unit_id "unitId" FROM roles ORDER BY system DESC,name`,
           )
         : Promise.resolve([]),
       !syncOnly && (permissions.includes("user.manage") ||
@@ -140,13 +149,13 @@ export async function GET(request: NextRequest) {
       permissions.includes("booking.manage_all") ||
       user.is_god)
         ? db.query(
-            `SELECT u.id,u.name,u.username,u.role_id,r.name role_name,u.active,u.is_god,u.is_owner_god,
+            `SELECT u.active global_active,u.id,u.name,u.username,u.primary_unit_id,u.updated_at,mappa_effective_role(u.id,u.role_id) role_id,r.name role_name,CASE WHEN u.is_god THEN u.active ELSE u.active AND COALESCE((SELECT active FROM unit_memberships WHERE user_id=u.id AND unit_id=mappa_current_unit()),false) END active,u.is_god,u.is_owner_god,
       jsonb_array_length(u.security_answers) security_answer_count,
       CASE WHEN $1::boolean THEN u.last_login_at ELSE NULL END last_login_at,
       CASE WHEN $1::boolean THEN u.last_seen_at ELSE NULL END last_seen_at,
       CASE WHEN $1::boolean THEN u.login_count ELSE 0 END login_count,
       u.request_reminders_enabled
-      FROM users u JOIN roles r ON r.id=u.role_id WHERE u.deleted_at IS NULL ORDER BY u.name`,
+      FROM users u JOIN roles r ON r.id=mappa_effective_role(u.id,u.role_id) WHERE u.deleted_at IS NULL AND mappa_user_in_unit(u.id,true) ORDER BY u.name`,
             [canAccessReport],
           )
         : Promise.resolve([]),
@@ -190,8 +199,20 @@ export async function GET(request: NextRequest) {
             WHERE user_id=$1 AND acknowledged_at IS NULL ORDER BY created_at,id`, [user.id]),
       !syncOnly && canAssignResponsibles ? db.query(ROOM_REVIEWER_OPTIONS_SQL) : Promise.resolve([]),
     ]);
+  const additionalDutyRequests=units.length>1 ? await rawSql().query(`SELECT br.id,br.unit_id "unitId",unit.code "unitCode",unit.name "unitName",br.room_id "roomId",room.name "roomName",u.name "requesterName",br.requested_date::text "requestedDate",br.start_time "startTime",br.end_time "endTime",br.urgent,br.status
+    FROM booking_requests br JOIN units unit ON unit.id=br.unit_id JOIN users u ON u.id=br.requester_id LEFT JOIN rooms room ON room.id=br.room_id
+    WHERE br.status='pending' AND br.unit_id<>$2 AND br.unit_id=ANY($3::uuid[]) AND EXISTS(
+      SELECT 1 FROM room_review_responsibilities rr JOIN rooms assigned ON assigned.id=rr.room_id
+      LEFT JOIN unit_memberships member ON member.user_id=rr.user_id AND member.unit_id=br.unit_id LEFT JOIN roles role ON role.id=member.role_id
+      WHERE rr.user_id=$1 AND rr.unit_id=br.unit_id AND assigned.active AND (br.room_id=rr.room_id OR br.room_id IS NULL)
+        AND ($4::boolean OR (member.active AND role.permissions ? 'booking.review')))
+    ORDER BY br.created_at`,[user.id,scope.unitId,units.map(unit=>unit.id),user.is_god]) : [];
+  const handovers = user.is_god || permissions.includes("user.manage") || permissions.includes("booking.review")
+    ? await db.query(`SELECT id,summary,created_at "createdAt" FROM unit_handovers WHERE reviewed_at IS NULL ORDER BY created_at`) : [];
+  const unitRoles=!syncOnly && user.is_god ? await rawSql().query(`SELECT id,name,color,permissions,system,unit_id "unitId" FROM roles ORDER BY name`) : [];
+  const directoryUsers=!syncOnly && user.is_god ? await rawSql().query(`SELECT u.id,u.name,u.username,u.role_id "roleId",r.name "roleName",u.primary_unit_id "primaryUnitId",u.updated_at "updatedAt",u.active "globalActive",u.active,u.is_god "isGod",u.is_owner_god "isOwnerGod" FROM users u JOIN roles r ON r.id=u.role_id WHERE u.deleted_at IS NULL ORDER BY u.name`) : [];
   if (syncOnly)
-    return NextResponse.json({
+    return NextResponse.json({ activeUnit,units,handovers,additionalDutyRequests,
       configured: true,
       partial: true,
       currentUser: { id: user.id, name: user.name, username: user.username, roleId: user.role_id,
@@ -267,7 +288,9 @@ export async function GET(request: NextRequest) {
     now: new Date().toISOString(),
     requestExpiryAlerts: requestExpiryAlerts.map((alert) => ({ id: alert.id, requestId: alert.request_id, message: alert.message, createdAt: alert.created_at })),
     roomReviewerOptions: roomReviewerOptions.map((reviewer) => ({ id: reviewer.id, name: reviewer.name, username: reviewer.username, roleName: reviewer.role_name })),
+    activeUnit,units,unitRoles,directoryUsers,handovers,additionalDutyRequests,
     currentUser: {
+      primaryUnitId:user.primary_unit_id,
       id: user.id,
       name: user.name,
       username: user.username,
@@ -351,6 +374,7 @@ export async function GET(request: NextRequest) {
     })),
     roles,
     users: users.map((u) => ({
+      primaryUnitId:u.primary_unit_id,updatedAt:u.updated_at,globalActive:u.global_active,
       id: u.id,
       name: u.name,
       username: u.username,
@@ -421,3 +445,5 @@ export async function GET(request: NextRequest) {
     pushPublicKey: pushConfiguration?.publicKey || "",
   });
 }
+
+export const GET = withUnitRequest(handleGET, true);

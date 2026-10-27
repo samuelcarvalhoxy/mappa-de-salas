@@ -1,5 +1,7 @@
 "use client";
 
+import { unitHeaders, unitExportName } from "@/lib/unit-client";
+
 import {
   FormEvent,
   useCallback,
@@ -102,7 +104,7 @@ import { RoomMapSpreadsheet } from "./room-map-spreadsheet";
 import { RoomResponsibilityForm } from "./room-responsibility-form";
 import { OfflinePendingRequests, PendingRequestBanner, PendingRequestEffects } from "./pending-request-attention";
 import { usePendingRequestAttention } from "./use-pending-request-attention";
-import { PENDING_DUTY_CACHE_KEY, DUTY_REMINDER_INTERVAL_MS, parsePendingDutyCache, pendingDutySnapshot, type PendingDutySnapshot } from "@/lib/pending-request-attention";
+import { PENDING_DUTY_CACHE_KEY, DUTY_REMINDER_INTERVAL_MS, readPendingDutyCache, writePendingDutyCache, clearPendingDutyCache, pendingDutySnapshot, type PendingDutySnapshot } from "@/lib/pending-request-attention";
 import type { SheetTransfer, SheetCancellationEntry } from "@/lib/spreadsheet-bookings";
 import { AlternateDatePicker } from "./alternate-date-picker";
 import { BulkCancelModal } from "./bulk-cancel-modal";
@@ -160,7 +162,7 @@ const PERMISSION_LABELS: Record<Permission, string> = {
   "notification.send": "Enviar notificações e administrar modelos",
   "access.report": "Consultar relatório de acessos",
   "user.manage": "Cadastrar e editar usuários",
-  "user.delete": "Excluir usuários",
+  "user.delete": "Remover acesso à unidade",
   "security.reset": "Resetar respostas de segurança",
   "role.manage": "Criar perfis e permissões",
   "audit.view": "Consultar histórico",
@@ -223,10 +225,10 @@ async function api(path: string, body?: Record<string, unknown>) {
     body
       ? {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: { "Content-Type": "application/json", ...unitHeaders() },
           body: JSON.stringify(body),
         }
-      : { cache: "no-store" },
+      : { cache: "no-store", headers: unitHeaders() },
   );
   const data = (await response.json().catch(() => ({}))) as ApiPayload;
   if (!response.ok)
@@ -279,7 +281,7 @@ export function AppShell() {
   useEffect(() => { stateRef.current = state; }, [state]);
 
   function clearDutyCache() {
-    try { localStorage.removeItem(PENDING_DUTY_CACHE_KEY); } catch { /* Storage may be unavailable. */ }
+    try { clearPendingDutyCache(); } catch { /* Storage may be unavailable. */ }
     setOfflineSnapshot(null);
   }
 
@@ -322,14 +324,17 @@ export function AppShell() {
       if (payload.requestExpiryAlerts)
         payload.requestExpiryAlerts = payload.requestExpiryAlerts.filter((alert) => !acknowledgedExpiryIds.current.has(alert.id));
       const next = payload.partial ? ({ ...stateRef.current, ...payload } as AppState) : (payload as AppState);
+      if (next.activeUnit) {
+        const url=new URL(window.location.href); url.searchParams.set("unit",next.activeUnit.code);
+        window.history.replaceState({},"",url.pathname+url.search);
+      }
       stateRef.current = next;
       setState(next);
       setOfflineSnapshot(null);
       setNetworkOffline(false);
       try {
         const snapshot = pendingDutySnapshot(next);
-        if (snapshot) localStorage.setItem(PENDING_DUTY_CACHE_KEY,JSON.stringify(snapshot));
-        else localStorage.removeItem(PENDING_DUTY_CACHE_KEY);
+        writePendingDutyCache(snapshot,next.currentUser && next.activeUnit ? {userId:next.currentUser.id,unitId:next.activeUnit.id,unitCode:next.activeUnit.code} : undefined);
       } catch { /* Local alerts remain active when storage is unavailable. */ }
       setError("");
       const syncedAt = new Date();
@@ -340,12 +345,12 @@ export function AppShell() {
       if (epoch !== authEpoch.current) return;
       setSyncStatus("error");
       if (e instanceof ApiError && (e.status === 401 || e.status === 403)) {
-        try { localStorage.removeItem(PENDING_DUTY_CACHE_KEY); } catch { /* No cached account is reused. */ }
+        try { clearPendingDutyCache(); } catch { /* No cached account is reused. */ }
         setOfflineSnapshot(null);
         stateRef.current = EMPTY;
         setState(EMPTY);
       } else if (!stateRef.current.currentUser && !(e instanceof ApiError)) {
-        try { setOfflineSnapshot(parsePendingDutyCache(localStorage.getItem(PENDING_DUTY_CACHE_KEY))); } catch { /* Offline summaries are optional. */ }
+        try { setOfflineSnapshot(readPendingDutyCache()); } catch { /* Offline summaries are optional. */ }
       }
       if (!quiet)
         setError(e instanceof Error ? e.message : "Falha de conexão.");
@@ -387,7 +392,7 @@ export function AppShell() {
     window.addEventListener("offline",offline);
     const cached = (event: StorageEvent) => {
       if (event.key !== PENDING_DUTY_CACHE_KEY) return;
-      const snapshot = parsePendingDutyCache(event.newValue);
+      const snapshot = readPendingDutyCache();
       setOfflineSnapshot((current) => current && snapshot?.userId === current.userId ? snapshot : null);
     };
     window.addEventListener("storage",cached);
@@ -481,11 +486,22 @@ export function AppShell() {
       })
         .catch(() => null)
         .finally(() => {
-          window.history.replaceState({}, "", window.location.pathname);
+          const cleared=new URL(window.location.href);cleared.searchParams.delete("request");cleared.searchParams.delete("tab");window.history.replaceState({}, "", cleared.pathname+cleared.search);
           void refresh(true);
         });
   }, [refresh, state.currentUser]);
 
+  const changeUnit = (code: string,nextTab: "map" | "requests" = "map") => {
+    if (actionInFlight.current) { showError("Aguarde a operação em andamento antes de trocar de unidade."); return; }
+    if (!navigator.onLine) { showError("Conecte-se à internet para trocar de unidade."); return; }
+    if (!stateRef.current.units?.some(unit=>unit.code===code)) return;
+    authEpoch.current+=1;
+    backgroundSyncInFlight.current=false;
+    setOfflineSnapshot(null); setModal(null); setToast(""); setError(""); setActiveTab(nextTab); setSheetView(false);
+    const url=new URL(window.location.href); url.searchParams.set("unit",code);url.searchParams.delete("request");url.searchParams.delete("tab");
+    window.history.replaceState({},"",url.pathname+url.search);
+    stateRef.current=EMPTY;setState(EMPTY);setLoading(true);void refresh();
+  };
   const act = async (body: Record<string, unknown>, success: string) => {
     if (actionInFlight.current) return;
     actionInFlight.current = true;
@@ -564,7 +580,7 @@ export function AppShell() {
   if (!state.currentUser && offlineSnapshot) return <OfflinePendingRequests snapshot={offlineSnapshot}
     rootRef={attentionRootRef} buttonRef={requestNavRef} rippleRef={rippleRef} reminderVisible={reminderVisible}
     onReconnect={() => void refresh()} onClear={clearDutyCache} />;
-  if (!state.currentUser) return <LoginScreen onDone={() => { authEpoch.current += 1; clearDutyCache(); void refresh(); }} />;
+  if (!state.currentUser) return <LoginScreen onDone={() => { authEpoch.current += 1; clearDutyCache(); const url=new URL(window.location.href);url.searchParams.delete("unit");window.history.replaceState({},"",url.pathname+url.search); void refresh(); }} />;
 
   const user = state.currentUser;
   const sidebarLocked = Boolean(dutySnapshot);
@@ -866,8 +882,12 @@ export function AppShell() {
             </button>
           </div>
         </header>
-        <div className="content">
-          {dutySnapshot && <PendingRequestBanner snapshot={dutySnapshot} offline={networkOffline || syncStatus === "error"} onOpen={() => setActiveTab("requests")} />}
+        <nav className="unit-switcher" aria-label="Unidades do Mappa de Salas">
+          {(state.units || []).map(unit=><button key={unit.id} type="button" aria-pressed={unit.id===state.activeUnit?.id} className={unit.id===state.activeUnit?.id ? "active" : ""} onClick={()=>{if(unit.id!==state.activeUnit?.id)changeUnit(unit.code);}}>{unit.name}{dutySnapshot?.requests.some(request=>request.unitId===unit.id) && <span className="unit-duty-count">{dutySnapshot.requests.filter(request=>request.unitId===unit.id).length}</span>}</button>)}
+        </nav>
+        <div className="content" key={state.activeUnit?.id}>
+          {Boolean(state.handovers?.length) && <section className="unit-handover-panel" aria-label="Pendências de transferências"><strong>Pendências da gestão de {state.activeUnit?.name}</strong>{state.handovers?.map(item=><article key={item.id}><p>{item.summary}</p><button type="button" className="btn btn-soft" onClick={()=>void act({action:"unit.handover_review",id:item.id},"Revisão registrada.")}>Marcar como revisado</button></article>)}</section>}
+          {dutySnapshot && <PendingRequestBanner snapshot={dutySnapshot} offline={networkOffline || syncStatus === "error"} onOpen={() => { const target=dutySnapshot.requests.find(request=>request.unitId===state.activeUnit?.id) || dutySnapshot.requests[0]; if(target && target.unitId!==state.activeUnit?.id) changeUnit(target.unitCode,"requests"); else setActiveTab("requests"); }} />}
           {error && (
             <div className="alert global-alert error-shake" role="alert">
               <span>{error}</span>
@@ -1048,12 +1068,12 @@ export function AppShell() {
               onDelete={(managed) => {
                 if (
                   window.confirm(
-                    `Excluir o acesso de ${managed.name}? O histórico será preservado, mas a pessoa não poderá mais entrar.`,
+                    `Remover o acesso de ${managed.name} à unidade ${state.activeUnit?.name}? Reservas e histórico serão preservados, e as pendências serão encaminhadas à gestão.`,
                   )
                 )
                   act(
                     { action: "user.delete", id: managed.id },
-                    "Usuário excluído.",
+                    "Acesso removido desta unidade.",
                   );
               }}
             />
@@ -2008,6 +2028,7 @@ function RoomMap({
           </span>
           <div>
             <strong>
+              {state.activeUnit && `${state.activeUnit.name} · `}
               {viewMode === "spreadsheet" && sheetLayout === "week"
                 ? `${requestDateLabel(spreadsheetStartDate)} a ${requestDateLabel(spreadsheetEndDate)}`
                 : isToday
@@ -5940,35 +5961,26 @@ function UserModal({
   onClose: () => void;
   onSave: (v: unknown) => void;
 }) {
-  const availableRoles = state.roles.filter(
-    (role) =>
-      (role.name !== "God" || canCreateGod) &&
-      Boolean(state.currentUser) &&
-      canManagePermissionChanges({
-        actorPermissions: state.currentUser?.permissions || [],
-        actorIsGod: Boolean(state.currentUser?.isGod),
-        currentPermissions:
-          state.roles.find((currentRole) => currentRole.id === user?.roleId)
-            ?.permissions || [],
-        nextPermissions: role.permissions,
-      }),
-  );
-  const defaultRoleId =
-    availableRoles.find((role) => role.name === "Usuário")?.id ||
-    availableRoles[0]?.id ||
-    "";
-  const [name, setName] = useState(user?.name || "");
-  const [username, setUsername] = useState(user?.username || "");
-  const [roleId, setRoleId] = useState(user?.roleId || defaultRoleId);
+  const [linkedUser,setLinkedUser]=useState<AppState["users"][number] | null>(null);
+  const editingUser=user || linkedUser;
+  const [primaryUnitId,setPrimaryUnitId]=useState(user?.primaryUnitId || state.activeUnit?.id || "");
+  const roleCatalog=canCreateGod && state.unitRoles?.length ? state.unitRoles : state.roles;
+  const availableRoles=roleCatalog.filter(role=>(!role.unitId || role.unitId===primaryUnitId) && (role.name!=="God" || canCreateGod) &&
+    canManagePermissionChanges({actorPermissions:state.currentUser?.permissions || [],actorIsGod:Boolean(state.currentUser?.isGod),currentPermissions:roleCatalog.find(r=>r.id===editingUser?.roleId)?.permissions || [],nextPermissions:role.permissions}));
+  const initialRole=availableRoles.find(r=>r.id===user?.roleId) || availableRoles.find(r=>r.name===user?.roleName) || availableRoles.find(r=>r.name==="Usuário") || availableRoles[0];
+  const [name,setName]=useState(user?.name || "");
+  const [username,setUsername]=useState(user?.username || "");
+  const [roleId,setRoleId]=useState(initialRole?.id || "");
   const [password, setPassword] = useState("");
   const [active, setActive] = useState(user?.active !== false);
+  const [globalActive,setGlobalActive]=useState(user?.globalActive!==false);
   const [answers, setAnswers] = useState(
     SECURITY_FIELDS.map((field) => ({ question: field.question, answer: "" })),
   );
-  const showAnswers = !user;
+  const showAnswers = !editingUser;
   return (
     <Modal
-      title={user ? "Editar usuário" : "Novo usuário"}
+      title={editingUser ? "Editar usuário" : "Novo usuário"}
       subtitle="Cadastre o acesso e a forma de recuperação segura."
       onClose={onClose}
     >
@@ -5977,16 +5989,33 @@ function UserModal({
         onSubmit={(event) => {
           event.preventDefault();
           onSave({
-            id: user?.id,
+            id: editingUser?.id,
+            primaryUnitId,expectedPrimaryUnitId:editingUser?.primaryUnitId,
             name,
             username,
             roleId,
             password,
-            active,
+            active,globalActive:canCreateGod ? globalActive : undefined,
             securityAnswers: showAnswers ? answers : [],
           });
         }}
       >
+        {canCreateGod && !user && <label>Usar uma conta existente
+          <select value={linkedUser?.id || ""} onChange={event=>{
+            const selected=state.directoryUsers?.find(person=>person.id===event.target.value) || null;
+            setLinkedUser(selected);setGlobalActive(selected?.globalActive!==false);setActive(true);setName(selected?.name || "");setUsername(selected?.username || "");setPassword("");
+            const chosen=availableRoles.find(role=>role.name===selected?.roleName) || availableRoles.find(role=>role.name==="Usuário");setRoleId(chosen?.id || "");
+          }}><option value="">Criar uma nova conta</option>{state.directoryUsers?.filter(person=>!person.isGod).map(person=><option key={person.id} value={person.id}>{person.name} (@{person.username})</option>)}</select>
+          <small className="field-help">Trazer uma conta existente preserva o login e o histórico. O acesso anterior será encerrado ao transferir.</small>
+        </label>}
+        <label>Unidade principal
+          <select value={primaryUnitId} disabled={!canCreateGod} onChange={event=>{
+            const next=event.target.value;setPrimaryUnitId(next);
+            const current=roleCatalog.find(role=>role.id===roleId);
+            const selected=roleCatalog.find(role=>role.unitId===next && role.name===current?.name) || roleCatalog.find(role=>role.unitId===next && role.name==="Usuário");setRoleId(selected?.id || "");
+          }}>{state.units?.map(unit=><option value={unit.id} key={unit.id}>{unit.name}</option>)}</select>
+        </label>
+        {editingUser && editingUser.primaryUnitId!==primaryUnitId && <p className="replacement-notice">A transferência preservará as reservas e o histórico na unidade de origem. Pendências e responsabilidades serão encaminhadas à gestão anterior ou sinalizadas aos GODs.</p>}
         <div className="form-grid">
           <label>
             Nome completo
@@ -6011,7 +6040,7 @@ function UserModal({
             <select
               value={roleId}
               onChange={(event) => setRoleId(event.target.value)}
-              disabled={user?.isOwnerGod}
+              disabled={editingUser?.isOwnerGod}
             >
               {availableRoles.map((role) => (
                 <option key={role.id} value={role.id}>
@@ -6021,13 +6050,13 @@ function UserModal({
             </select>
           </label>
           <label>
-            {user ? "Nova senha, opcional" : "Senha inicial"}
+            {editingUser ? "Nova senha, opcional" : "Senha inicial"}
             <input
               type="password"
-              minLength={user ? 0 : 8}
+              minLength={editingUser ? 0 : 8}
               value={password}
               onChange={(event) => setPassword(event.target.value)}
-              required={!user}
+              required={!editingUser}
             />
           </label>
         </div>
@@ -6048,7 +6077,7 @@ function UserModal({
                 }
               />
             ))}
-            {!user && (
+            {!editingUser && (
               <small className="field-help">
                 Se ficarem vazias, o usuário será obrigado a defini-las antes do
                 primeiro acesso.
@@ -6056,7 +6085,7 @@ function UserModal({
             )}
           </fieldset>
         )}
-        {user && !user.isOwnerGod && (
+        {editingUser && !editingUser.isOwnerGod && (
           <label className="check-row">
             <input
               type="checkbox"
@@ -6064,10 +6093,11 @@ function UserModal({
               onChange={(event) => setActive(event.target.checked)}
             />
             <span>
-              <strong>Usuário ativo</strong>
+              <strong>{editingUser?.isGod ? "Conta GOD ativa" : "Acesso à unidade ativo"}</strong>
             </span>
           </label>
         )}
+        {canCreateGod && editingUser && !editingUser.isGod && <label className="check-row"><input type="checkbox" checked={globalActive} onChange={event=>setGlobalActive(event.target.checked)}/><span><strong>Conta global ativa</strong><small className="field-help">Desativar bloqueia o login em todas as unidades e encaminha as pendências à gestão.</small></span></label>}
         <ModalActions onClose={onClose} submit="Salvar usuário" />
       </form>
     </Modal>

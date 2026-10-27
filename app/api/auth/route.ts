@@ -7,7 +7,7 @@ import {
   setSecuritySetupSession,
   setSession,
 } from "@/lib/auth";
-import { ensureDatabase, hasDatabase, sql } from "@/lib/db";
+import { ensureDatabase, hasDatabase, rawSql as sql } from "@/lib/db";
 import {
   isAllowedSecurityAnswer,
   SECURITY_QUESTIONS,

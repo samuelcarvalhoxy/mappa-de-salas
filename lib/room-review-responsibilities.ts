@@ -26,11 +26,11 @@ export const SAVE_ROOM_RESPONSIBILITIES_SQL = `WITH wanted AS MATERIALIZED (
   SELECT DISTINCT unnest($2::uuid[]) user_id
 ), gate AS MATERIALIZED (
   SELECT EXISTS (SELECT 1 FROM rooms WHERE id=$1 AND active=true AND kind<>'virtual') room_exists,
-    EXISTS (SELECT 1 FROM users u JOIN roles r ON r.id=u.role_id
+    EXISTS (SELECT 1 FROM users u JOIN roles r ON r.id=mappa_effective_role(u.id,u.role_id)
       WHERE u.id=$3 AND u.active=true AND u.deleted_at IS NULL
         AND (u.is_god=true OR r.permissions ? 'room.assign_responsibles')) can_assign,
-    NOT EXISTS (SELECT 1 FROM wanted w LEFT JOIN users u ON u.id=w.user_id LEFT JOIN roles r ON r.id=u.role_id
-      WHERE (u.active=true AND u.deleted_at IS NULL AND (u.is_god=true OR r.permissions ? 'booking.review')) IS NOT TRUE) valid_reviewers
+    NOT EXISTS (SELECT 1 FROM wanted w LEFT JOIN users u ON u.id=w.user_id LEFT JOIN roles r ON r.id=mappa_effective_role(u.id,u.role_id)
+      WHERE (u.active=true AND u.deleted_at IS NULL AND mappa_user_in_unit(u.id) AND (u.is_god=true OR r.permissions ? 'booking.review')) IS NOT TRUE) valid_reviewers
 ), previous AS MATERIALIZED (
   SELECT COALESCE(array_agg(user_id::text ORDER BY user_id),'{}'::text[]) ids
   FROM room_review_responsibilities WHERE room_id=$1
@@ -52,10 +52,10 @@ export const SAVE_ROOM_RESPONSIBILITIES_SQL = `WITH wanted AS MATERIALIZED (
 SELECT * FROM gate`;
 
 export const ROOM_RESPONSIBLE_USERS_SQL = `SELECT rr.room_id,u.id,u.name,
-  (u.active=true AND u.deleted_at IS NULL AND (u.is_god=true OR r.permissions ? 'booking.review')) eligible
-  FROM room_review_responsibilities rr JOIN users u ON u.id=rr.user_id JOIN roles r ON r.id=u.role_id`;
+  (u.active=true AND u.deleted_at IS NULL AND mappa_user_in_unit(u.id) AND (u.is_god=true OR r.permissions ? 'booking.review')) eligible
+  FROM room_review_responsibilities rr JOIN users u ON u.id=rr.user_id JOIN roles r ON r.id=mappa_effective_role(u.id,u.role_id)`;
 
 export const ROOM_REVIEWER_OPTIONS_SQL = `SELECT u.id,u.name,u.username,r.name role_name
-  FROM users u JOIN roles r ON r.id=u.role_id
-  WHERE u.active=true AND u.deleted_at IS NULL AND (u.is_god=true OR r.permissions ? 'booking.review')
+  FROM users u JOIN roles r ON r.id=mappa_effective_role(u.id,u.role_id)
+  WHERE u.active=true AND u.deleted_at IS NULL AND mappa_user_in_unit(u.id) AND (u.is_god=true OR r.permissions ? 'booking.review')
   ORDER BY u.name,u.username`;

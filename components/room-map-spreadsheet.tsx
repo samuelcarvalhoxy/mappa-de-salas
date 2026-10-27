@@ -1,5 +1,7 @@
 "use client";
 
+import { unitExportName } from "@/lib/unit-client";
+
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   CalendarPlus,
@@ -215,7 +217,7 @@ async function exportSpreadsheetMap(
   );
   const link = document.createElement("a");
   link.href = url;
-  link.download = `mapa-de-salas-${dates.length === 1 ? "dia" : "semana"}-${dates[0]}.xlsx`;
+  link.download = unitExportName(`mapa-de-salas-${dates.length === 1 ? "dia" : "semana"}-${dates[0]}.xlsx`);
   link.style.display = "none";
   document.body.append(link);
   link.click();

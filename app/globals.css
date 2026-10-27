@@ -4225,3 +4225,13 @@ main {
   position: fixed; inset: 0; z-index: 45; padding: 8px; background: var(--bg);
   overflow: auto; overscroll-behavior: contain;
 }
+
+.unit-switcher { display: flex; flex-wrap: wrap; gap: 8px; padding: 10px 32px 0; }
+.unit-switcher button { border: 1px solid var(--line); background: var(--surface); color: var(--muted); border-radius: 10px; padding: 10px 22px; font-weight: 800; font-size: 12px; cursor: pointer; }
+.unit-switcher button.active { background: var(--brand); color: var(--on-brand); border-color: var(--brand); box-shadow: 0 3px 12px color-mix(in srgb,var(--brand) 18%,transparent); }
+.spreadsheet-focus .unit-switcher { padding: 5px 12px 0; gap: 5px; }
+.spreadsheet-focus .unit-switcher button { padding: 5px 14px; font-size: 11px; }
+.unit-handover-panel { padding: 14px; border: 1px solid var(--brand); background: var(--brand-soft); border-radius: 12px; margin-bottom: 14px; }
+.unit-handover-panel article { display: flex; align-items: center; gap: 14px; margin-top: 10px; font-size: 12px; line-height: 1.5; }
+.unit-handover-panel article p { flex: 1; }
+@media(max-width:780px) { .unit-switcher { padding: 8px 14px 0; } .unit-switcher button { flex: 1; padding: 9px; } .unit-handover-panel article { align-items: stretch; flex-direction: column; } }

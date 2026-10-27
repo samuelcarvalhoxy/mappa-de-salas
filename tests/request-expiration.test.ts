@@ -14,6 +14,8 @@ const room = "00000000-0000-4000-8000-000000000004";
 const request = "00000000-0000-4000-8000-000000000005";
 
 before(async () => {
+  await db.exec(`CREATE FUNCTION mappa_effective_role(target uuid,fallback anyelement) RETURNS anyelement LANGUAGE sql AS 'SELECT $2';
+    CREATE FUNCTION mappa_user_in_unit(target uuid,include_inactive boolean DEFAULT false) RETURNS boolean LANGUAGE sql AS 'SELECT true';`);
   await db.exec(`CREATE TABLE roles(id int PRIMARY KEY,permissions jsonb);
     CREATE TABLE users(id uuid PRIMARY KEY,name text,role_id int REFERENCES roles(id),active boolean DEFAULT true,
       deleted_at timestamptz,is_god boolean DEFAULT false);

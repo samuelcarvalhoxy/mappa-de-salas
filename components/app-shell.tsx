@@ -1841,6 +1841,7 @@ function RoomMap({
   const [viewMode, setViewMode] = useState<"cards" | "spreadsheet">("cards");
   const [showSheetControls, setShowSheetControls] = useState(false);
   const [sheetLayout, setSheetLayout] = useState<"day" | "week">("day");
+  const [sheetExpanded, setSheetExpanded] = useState(false);
   useEffect(() => () => onViewModeChange("cards"), [onViewModeChange]);
   const [selectedShiftId, setSelectedShiftId] = useState(() =>
     mapShiftForNow(state.now),
@@ -1999,7 +2000,7 @@ function RoomMap({
   };
   const navigationStep = viewMode === "spreadsheet" && sheetLayout === "week" ? 7 : 1;
   return (
-    <section className={`room-map ${viewMode === "spreadsheet" ? "room-map-sheet" : ""}`}>
+    <section className={`room-map ${viewMode === "spreadsheet" ? "room-map-sheet" : ""} ${viewMode === "spreadsheet" && sheetExpanded ? "room-map-expanded" : ""}`}>
       <div className="map-date-bar" aria-busy={dayLoading}>
         <div className="map-date-copy">
           <span className="map-date-icon">
@@ -2201,6 +2202,8 @@ function RoomMap({
           startDate={selectedDate}
           layout={sheetLayout}
           onLayoutChange={setSheetLayout}
+          expanded={sheetExpanded}
+          onExpandedChange={setSheetExpanded}
           rooms={filtered}
           reservations={reservations}
           now={state.now}

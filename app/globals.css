@@ -4220,3 +4220,8 @@ main {
   .sheet-zoom-controls { flex-wrap: wrap; }
   .sheet-readable .sheet-edit-toolbar { flex-wrap: wrap; }
 }
+
+.room-map-expanded {
+  position: fixed; inset: 0; z-index: 45; padding: 8px; background: var(--bg);
+  overflow: auto; overscroll-behavior: contain;
+}

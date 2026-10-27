@@ -161,7 +161,7 @@ export function useSpreadsheetEditing({ rooms, dates, shifts, layout = "week", i
   }
   return { selection, clipboard, pending, message, setMessage, setPending, setClipboard,
     dropTarget, isSelected, cellProps, copy, paste, onClipboard, onKeyDown, startDrag, endDrag, touch,
-    deleteSelected, deleteBusy };
+    clearSelection: () => setStoredSelection(null), deleteSelected, deleteBusy };
 }
 
 export type SpreadsheetEditing = ReturnType<typeof useSpreadsheetEditing>;

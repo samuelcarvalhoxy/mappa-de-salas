@@ -472,6 +472,8 @@ export function RoomMapSpreadsheet({
   startDate,
   layout = "week",
   onLayoutChange,
+  expanded = false,
+  onExpandedChange,
   rooms,
   reservations,
   now,
@@ -492,6 +494,8 @@ export function RoomMapSpreadsheet({
   startDate: string;
   layout?: SheetLayout;
   onLayoutChange?: (layout: SheetLayout) => void;
+  expanded?: boolean;
+  onExpandedChange?: (expanded: boolean) => void;
   rooms: Room[];
   reservations: Reservation[];
   now: string;
@@ -532,9 +536,13 @@ export function RoomMapSpreadsheet({
   const roomCount = rooms.length;
   useEffect(() => {
     const syncFullscreen = () => setFullscreen(Boolean(document.fullscreenElement));
+    const escapeExpanded = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && !(event.target instanceof Element && event.target.closest("dialog,[role=dialog]"))) onExpandedChange?.(false);
+    };
+    document.addEventListener("keydown", escapeExpanded);
     document.addEventListener("fullscreenchange", syncFullscreen);
-    return () => document.removeEventListener("fullscreenchange", syncFullscreen);
-  }, []);
+    return () => { document.removeEventListener("fullscreenchange", syncFullscreen); document.removeEventListener("keydown", escapeExpanded); };
+  }, [onExpandedChange]);
   useEffect(() => {
     const element = sheetElement.current;
     if (!element) return;
@@ -570,18 +578,21 @@ export function RoomMapSpreadsheet({
       window.removeEventListener("resize", fit);
       document.removeEventListener("fullscreenchange", fit);
     };
-  }, [roomCount, visibleShifts, layout, fitToScreen, zoom]);
+  }, [roomCount, visibleShifts, layout, fitToScreen, zoom, expanded]);
   const changeZoom = (value: number) => {
     setZoom(Math.max(75, Math.min(200, value)));
     setFitToScreen(false);
   };
   const toggleFullscreen = async () => {
     try {
-      if (document.fullscreenElement) await document.exitFullscreen();
+      if (expanded) onExpandedChange?.(false);
+      else if (document.fullscreenElement) await document.exitFullscreen();
       else if (document.documentElement.requestFullscreen) await document.documentElement.requestFullscreen();
-      else editing.setMessage("Tela cheia indisponível neste navegador. Use Ajustar à tela ou o zoom da planilha.");
+      else if (onExpandedChange) onExpandedChange(true);
+      else editing.setMessage("Tela cheia indisponível neste navegador. Use Ajustar à tela.");
     } catch {
-      editing.setMessage("O navegador não permitiu abrir a tela cheia. Use Ajustar à tela ou o zoom da planilha.");
+      if (onExpandedChange) onExpandedChange(true);
+      else editing.setMessage("O navegador não permitiu abrir a tela cheia. Use Ajustar à tela.");
     }
   };
   const bounds = editing.selection ? sheetBounds(editing.selection) : null;
@@ -619,17 +630,17 @@ export function RoomMapSpreadsheet({
       </div>
       <div className="sheet-view-toolbar" aria-label="Visualização da planilha">
         {onLayoutChange && <div className="mode-toggle" role="group" aria-label="Período da planilha">
-          <button type="button" aria-pressed={layout === "day"} className={layout === "day" ? "active" : ""} onClick={() => onLayoutChange("day")}>Dia</button>
-          <button type="button" aria-pressed={layout === "week"} className={layout === "week" ? "active" : ""} onClick={() => onLayoutChange("week")}>Semana</button>
+          <button type="button" aria-pressed={layout === "day"} className={layout === "day" ? "active" : ""} onClick={() => { editing.clearSelection(); onLayoutChange("day"); }}>Dia</button>
+          <button type="button" aria-pressed={layout === "week"} className={layout === "week" ? "active" : ""} onClick={() => { editing.clearSelection(); onLayoutChange("week"); }}>Semana</button>
         </div>}
-        <button type="button" className="btn btn-soft" aria-pressed={fitToScreen} onClick={() => setFitToScreen(true)}><Scan size={16} /> Ajustar à tela</button>
+        <button type="button" className="btn btn-soft" aria-pressed={fitToScreen} onClick={() => { setFitToScreen(true); setZoom(100); }}><Scan size={16} /> Ajustar à tela</button>
         <div className="sheet-zoom-controls" role="group" aria-label="Zoom da planilha">
           <button type="button" className="icon-btn" aria-label="Diminuir zoom da planilha" disabled={!fitToScreen && zoom <= 75} onClick={() => changeZoom(zoom - 25)}><ZoomOut size={16} /></button>
           <label>Zoom <input type="range" aria-label="Zoom da planilha em porcentagem" min="75" max="200" step="25" value={zoom} onChange={(event) => changeZoom(Number(event.target.value))} /></label>
           <output aria-live="polite">{fitToScreen ? "Automático" : `${zoom}%`}</output>
           <button type="button" className="icon-btn" aria-label="Aumentar zoom da planilha" disabled={!fitToScreen && zoom >= 200} onClick={() => changeZoom(zoom + 25)}><ZoomIn size={16} /></button>
         </div>
-        <button type="button" className="btn btn-soft sheet-fullscreen" aria-pressed={fullscreen} onClick={() => void toggleFullscreen()}>{fullscreen ? <Minimize size={16} /> : <Maximize size={16} />}{fullscreen ? "Sair da tela cheia" : "Tela cheia"}</button>
+        <button type="button" className="btn btn-soft sheet-fullscreen" aria-pressed={fullscreen || expanded} onClick={() => void toggleFullscreen()}>{fullscreen || expanded ? <Minimize size={16} /> : <Maximize size={16} />}{fullscreen || expanded ? "Sair da tela cheia" : "Tela cheia"}</button>
       </div>
       <div className="sheet-edit-toolbar" aria-label="Ações da seleção">
         <span>{selectedCount ? `${selectedCount} célula(s) selecionada(s)` : "Selecione uma célula"}</span>
